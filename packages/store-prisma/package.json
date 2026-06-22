@@ -43,7 +43,7 @@
     "@openpipeline/core": "workspace:*"
   },
   "peerDependencies": {
-    "@prisma/client": ">=5"
+    "@prisma/client": ">=5 <7"
   },
   "devDependencies": {
     "@prisma/client": "^6.1.0",

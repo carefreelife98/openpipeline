@@ -7,6 +7,14 @@
 //
 // Generate the client into the package so it ships self-contained:
 //   npx prisma generate --schema prisma/schema.prisma
+//
+// Pinned to Prisma 6 (peerDependencies "@prisma/client": ">=5 <7").
+// Prisma 7 is intentionally NOT supported yet: a single schema cannot serve
+// both majors — v7 changes the generator (prisma-client-js -> prisma-client),
+// moves the datasource `url` out of this file into prisma.config.ts, and makes
+// a driver adapter mandatory at client construction. Those are mutually
+// exclusive with the v6 form below, so v7 is a breaking change deferred to
+// store-prisma v1.0 (see RELEASING.md "Prisma 7 migration").
 
 generator client {
   provider = "prisma-client-js"

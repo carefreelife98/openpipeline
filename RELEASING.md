@@ -53,3 +53,29 @@ ordering; if publishing by hand, follow the order above.
   once versions diverge.
 - **Dual ESM/CJS** — packages are intentionally ESM-only (`type: module`). Revisit
   if a CJS-only consumer needs it.
+
+## Prisma 7 migration (deferred to store-prisma v1.0)
+
+`@openpipeline/store-prisma` is pinned to **Prisma 6** (peer `@prisma/client: ">=5 <7"`).
+Prisma 7 is a **breaking** change for this package and is deliberately deferred —
+a single shipped `schema.prisma` cannot serve both majors, because each of these
+is single-valued and mutually exclusive across the boundary:
+
+1. **Generator** — `prisma-client-js` (v6) → `prisma-client` (v7, ESM/no-engine).
+2. **Datasource `url`** — required in-schema (v6) → removed, lives in
+   `prisma.config.ts` + `dotenv` (v7).
+3. **Driver adapter** — optional (v6) → mandatory `new PrismaClient({ adapter: new PrismaPg(...) })` (v7).
+
+When v7 is adopted (a `store-prisma` **v1.0**, peer `>=7`), the migration must:
+
+- Swap the generator block (`prisma-client`, `runtime`/`moduleFormat`), strip
+  `url` from the datasource, add `packages/store-prisma/prisma.config.ts`.
+- Add `@prisma/adapter-pg` + `pg` + `dotenv`; update `examples/prisma` to the
+  adapter-wired `PrismaClient` construction.
+- **Re-verify the atomic raw-SQL cost update** (`$executeRawUnsafe` in
+  `updateRunCostAtomic`) against a **real Postgres** through `@prisma/adapter-pg`
+  — the v7 adapter binds JS ints differently than the v6 Rust engine, so the
+  `(cost->...)::int + $N` path is NOT proven safe until tested live. This is a
+  hard gate for the v1.0 PR, not assumed.
+- Confirm the structural `PrismaClientLike` (`src/prisma-types.ts`) still matches
+  the v7-generated client's delegate signatures.
