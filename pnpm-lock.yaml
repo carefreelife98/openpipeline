@@ -157,11 +157,11 @@ importers:
   packages/core:
     dependencies:
       '@langchain/langgraph':
-        specifier: ^1.2.8
+        specifier: ^1.4.0
         version: 1.4.4(@langchain/core@1.2.0)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
     devDependencies:
       zod:
-        specifier: ^4.3.6
+        specifier: ^4.4.3
         version: 4.4.3
 
   packages/mcp:
@@ -177,26 +177,26 @@ importers:
         version: link:../core
     devDependencies:
       '@langchain/core':
-        specifier: ^1.1.39
+        specifier: ^1.2.0
         version: 1.2.0
       zod:
-        specifier: ^4.3.6
+        specifier: ^4.4.3
         version: 4.4.3
 
   packages/nodes:
     dependencies:
       '@langchain/langgraph':
-        specifier: ^1.2.8
+        specifier: ^1.4.0
         version: 1.4.4(@langchain/core@1.2.0)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
       '@openpipeline/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
       '@langchain/core':
-        specifier: ^1.1.39
+        specifier: ^1.2.0
         version: 1.2.0
       zod:
-        specifier: ^4.3.6
+        specifier: ^4.4.3
         version: 4.4.3
 
   packages/react:

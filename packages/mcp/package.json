@@ -42,12 +42,12 @@
     "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "peerDependencies": {
-    "@langchain/core": "^1.0.0",
+    "@langchain/core": "^1.1.48",
     "zod": "^3.25.32 || ^4.2.0"
   },
   "devDependencies": {
-    "@langchain/core": "^1.1.39",
-    "zod": "^4.3.6"
+    "@langchain/core": "^1.2.0",
+    "zod": "^4.4.3"
   },
   "publishConfig": {
     "access": "public"
