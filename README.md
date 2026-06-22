@@ -88,6 +88,7 @@ pnpm install && pnpm build && pnpm example
 | [`@openworkflow/mcp`](./packages/mcp) | Optional MCP integration: JSON-Schema→Zod converter, client factory, env catalog loader, `mcp:*` node resolver, and the `CatalogPolicy` hook. |
 | [`@openworkflow/store-prisma`](./packages/store-prisma) | Postgres `WorkflowStore` + `StepRecorder` adapter (Prisma). Ships a clean 5-model schema with no multi-tenancy. |
 | [`@openworkflow/server`](./packages/server) | Transport-agnostic HTTP + SSE handlers, plus a tiny Node `http` adapter. Streams live run events. |
+| [`@openworkflow/react`](./packages/react) | The visual DAG builder as a controlled React component library (`<BuilderCanvas/>` + a Zustand store). No Next.js, no auth — you own data loading and persistence. |
 
 ## Bring your own
 
@@ -170,9 +171,33 @@ events (`NODE_START` / `NODE_END` / `RUN_COMPLETE`, with node output + timing) a
 streamed via SSE — the engine drives them from LangGraph `streamEvents`, and you
 can also subscribe directly with `engine.onEvent(runId, listener)`.
 
+### Visual builder (React)
+
+```tsx
+import '@xyflow/react/dist/style.css';
+import { ReactFlowProvider } from '@xyflow/react';
+import { BuilderCanvas, createBuilderStore } from '@openworkflow/react';
+
+const store = createBuilderStore();
+store.getState().loadDraft(myWorkflowDraft); // from your GET endpoint
+
+<ReactFlowProvider>
+  <BuilderCanvas store={store} nodeRunStatus={liveStatus} />
+</ReactFlowProvider>
+// persist with store.getState().toDraft() -> your POST endpoint
+```
+
+`<BuilderCanvas/>` is a controlled component over a Zustand store. It renders the
+node graph with START/END markers, IF branches, drag/connect/delete, and a live
+run-status overlay. You supply the data adapter (load via `loadDraft`, save via
+`toDraft`), an i18n string map (`strings` prop, English defaults), and your own
+auth/router wrapper. It deliberately does NOT ship a Next.js shell, an API client,
+or auth — those were the Mate-X-locked parts.
+
 ## Roadmap
 
-- `@openworkflow/react` — the visual DAG builder as a controlled component library
+- A Vite playground app wiring `@openworkflow/react` to `@openworkflow/server` end to end
+- npm publish hardening (dual ESM/CJS, pinned peer deps, more examples)
 
 ## License
 
