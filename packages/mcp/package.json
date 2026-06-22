@@ -3,6 +3,22 @@
   "version": "0.1.0",
   "description": "Optional MCP integration for OpenWorkflow: JSON-Schema→Zod converter, MCP client factory, env catalog loader, and mcp:* node resolver.",
   "license": "MIT",
+  "author": "carefreelife98",
+  "homepage": "https://github.com/carefreelife98/openworkflow/tree/main/packages/mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carefreelife98/openworkflow.git",
+    "directory": "packages/mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/carefreelife98/openworkflow/issues"
+  },
+  "keywords": [
+    "workflow",
+    "mcp",
+    "model-context-protocol",
+    "tools"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,16 +28,25 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@openworkflow/core": "workspace:*",
-    "@langchain/core": "^1.1.39",
     "@langchain/mcp-adapters": "^1.1.3",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "peerDependencies": {
+    "@langchain/core": "^1.0.0",
+    "zod": "^3.25.32 || ^4.2.0"
+  },
+  "devDependencies": {
+    "@langchain/core": "^1.1.39",
     "zod": "^4.3.6"
   },
   "publishConfig": {

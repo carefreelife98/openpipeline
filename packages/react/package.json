@@ -3,6 +3,23 @@
   "version": "0.1.0",
   "description": "Visual DAG builder for OpenWorkflow as a controlled React component library (ReactFlow + Zustand).",
   "license": "MIT",
+  "author": "carefreelife98",
+  "homepage": "https://github.com/carefreelife98/openworkflow/tree/main/packages/react#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carefreelife98/openworkflow.git",
+    "directory": "packages/react"
+  },
+  "bugs": {
+    "url": "https://github.com/carefreelife98/openworkflow/issues"
+  },
+  "keywords": [
+    "workflow",
+    "builder",
+    "reactflow",
+    "react",
+    "dag"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,7 +29,10 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"

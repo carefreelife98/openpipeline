@@ -3,6 +3,22 @@
   "version": "0.1.0",
   "description": "Transport-agnostic HTTP + SSE handlers for OpenWorkflow, with a tiny Node http adapter.",
   "license": "MIT",
+  "author": "carefreelife98",
+  "homepage": "https://github.com/carefreelife98/openworkflow/tree/main/packages/server#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carefreelife98/openworkflow.git",
+    "directory": "packages/server"
+  },
+  "bugs": {
+    "url": "https://github.com/carefreelife98/openworkflow/issues"
+  },
+  "keywords": [
+    "workflow",
+    "sse",
+    "http",
+    "server"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,7 +28,10 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"

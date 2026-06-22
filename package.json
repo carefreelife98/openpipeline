@@ -4,6 +4,15 @@
   "private": true,
   "description": "A framework-agnostic engine for compiling and running MCP-tool workflows as LangGraph DAGs.",
   "license": "MIT",
+  "author": "carefreelife98",
+  "homepage": "https://github.com/carefreelife98/openworkflow#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carefreelife98/openworkflow.git"
+  },
+  "bugs": {
+    "url": "https://github.com/carefreelife98/openworkflow/issues"
+  },
   "type": "module",
   "scripts": {
     "build": "pnpm -r --filter \"./packages/*\" build",

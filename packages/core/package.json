@@ -3,6 +3,23 @@
   "version": "0.1.0",
   "description": "Framework-agnostic execution kernel and interface contracts for OpenWorkflow.",
   "license": "MIT",
+  "author": "carefreelife98",
+  "homepage": "https://github.com/carefreelife98/openworkflow/tree/main/packages/core#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carefreelife98/openworkflow.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/carefreelife98/openworkflow/issues"
+  },
+  "keywords": [
+    "workflow",
+    "langgraph",
+    "dag",
+    "mcp",
+    "typescript"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,13 +29,21 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@langchain/langgraph": "^1.2.8",
+    "@langchain/langgraph": "^1.2.8"
+  },
+  "peerDependencies": {
+    "zod": "^3.25.32 || ^4.2.0"
+  },
+  "devDependencies": {
     "zod": "^4.3.6"
   },
   "publishConfig": {

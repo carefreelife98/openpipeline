@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck all packages
+        run: pnpm typecheck
+      - name: Build all packages
+        run: pnpm build
+      - name: Run quickstart kernel (no secrets, no DB)
+        run: pnpm example
+
+  publish-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build all packages
+        run: pnpm build
+      - name: Assert no workspace: protocol leaks into packed tarballs
+        run: |
+          set -e
+          rm -rf /tmp/owf-pack && mkdir -p /tmp/owf-pack
+          for dir in packages/*/; do
+            name=$(node -p "require('./$dir/package.json').name")
+            pnpm --filter "$name" pack --pack-destination /tmp/owf-pack >/dev/null
+          done
+          leaked=0
+          for tgz in /tmp/owf-pack/*.tgz; do
+            if tar -xzOf "$tgz" package/package.json | grep -q '"workspace:'; then
+              echo "ERROR: $tgz still contains the workspace: protocol"
+              leaked=1
+            fi
+          done
+          if [ "$leaked" = "1" ]; then exit 1; fi
+          echo "OK: no workspace: protocol in any packed tarball"

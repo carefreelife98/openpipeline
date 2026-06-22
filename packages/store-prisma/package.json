@@ -3,6 +3,22 @@
   "version": "0.1.0",
   "description": "Postgres WorkflowStore + StepRecorder adapter for OpenWorkflow (Prisma).",
   "license": "MIT",
+  "author": "carefreelife98",
+  "homepage": "https://github.com/carefreelife98/openworkflow/tree/main/packages/store-prisma#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carefreelife98/openworkflow.git",
+    "directory": "packages/store-prisma"
+  },
+  "bugs": {
+    "url": "https://github.com/carefreelife98/openworkflow/issues"
+  },
+  "keywords": [
+    "workflow",
+    "store",
+    "prisma",
+    "postgres"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,7 +29,11 @@
     },
     "./schema.prisma": "./prisma/schema.prisma"
   },
-  "files": ["dist", "prisma"],
+  "files": [
+    "dist",
+    "prisma"
+  ],
+  "sideEffects": false,
   "scripts": {
     "prisma:generate": "prisma generate --schema prisma/schema.prisma",
     "build": "tsc -p tsconfig.json",
