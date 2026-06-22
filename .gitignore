@@ -6,3 +6,4 @@ dist/
 .env.local
 *.log
 packages/store-prisma/src/generated/
+/package/
