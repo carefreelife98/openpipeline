@@ -118,7 +118,9 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
       const existingIds = new Set(existing.map((n) => n.id));
       const draftIds = new Set(draft.nodes.map((n) => n.id));
 
-      const toSoftDelete = existing.filter((n) => !draftIds.has(n.id) && !n.isDeleted).map((n) => n.id);
+      const toSoftDelete = existing
+        .filter((n) => !draftIds.has(n.id) && !n.isDeleted)
+        .map((n) => n.id);
       if (toSoftDelete.length > 0) {
         await tx.pipelineNode.updateMany({
           where: { id: { in: toSoftDelete } },
@@ -186,7 +188,10 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
           ? { output: result.output as never }
           : {}),
         ...(isFailure
-          ? { error: (result.error ?? null) as never, lastState: (result.lastState ?? null) as never }
+          ? {
+              error: (result.error ?? null) as never,
+              lastState: (result.lastState ?? null) as never,
+            }
           : {}),
         ...(result.cost ? { cost: result.cost as never } : {}),
       },
@@ -212,7 +217,7 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
       delta.tokens.total,
       delta.dollars,
       delta.llmCalls,
-      runId,
+      runId
     );
   }
 
@@ -221,7 +226,14 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
       where: { pipelineId },
       orderBy: { startedAt: 'desc' },
       ...(opts?.limit ? { take: opts.limit } : {}),
-      select: { id: true, pipelineId: true, status: true, startedAt: true, finishedAt: true, cost: true },
+      select: {
+        id: true,
+        pipelineId: true,
+        status: true,
+        startedAt: true,
+        finishedAt: true,
+        cost: true,
+      },
     })) as Array<{
       id: string;
       pipelineId: string;
@@ -292,7 +304,10 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
     input: unknown;
   }): Promise<string> {
     return this.serializeByRun(params.runId, () =>
-      this.startInternal({ runId: params.runId, nodeId: params.nodeId, nodeLabel: params.nodeId }, params.parentStepId),
+      this.startInternal(
+        { runId: params.runId, nodeId: params.nodeId, nodeLabel: params.nodeId },
+        params.parentStepId
+      )
     );
   }
 

@@ -5,7 +5,17 @@ import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyf
  * data (`onDelete`) so the canvas wires it to the store.
  */
 export function DeletableEdge(props: EdgeProps): React.JSX.Element {
-  const { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style, markerEnd } = props;
+  const {
+    id,
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+    style,
+    markerEnd,
+  } = props;
   const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,

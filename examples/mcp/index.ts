@@ -42,7 +42,11 @@ const mockCatalogLoader: CatalogLoader = {
               },
               outputSchema: {
                 type: 'object',
-                properties: { city: { type: 'string' }, summary: { type: 'string' }, tempC: { type: 'number' } },
+                properties: {
+                  city: { type: 'string' },
+                  summary: { type: 'string' },
+                  tempC: { type: 'number' },
+                },
                 required: ['city', 'summary', 'tempC'],
               },
               invoke: async (input: unknown) => {

@@ -51,7 +51,7 @@ export class McpNodeResolverImpl implements McpNodeResolver {
 
   async resolveSpec(
     key: string,
-    ctx: { userId?: string; tenantId?: string; mcpCatalogCache?: readonly unknown[] },
+    ctx: { userId?: string; tenantId?: string; mcpCatalogCache?: readonly unknown[] }
   ): Promise<NodeSpec> {
     const { providerKey, toolName } = parseMcpKey(key);
     const providers = (ctx.mcpCatalogCache ?? []) as readonly ResolvedProvider[];
@@ -74,7 +74,10 @@ export class McpNodeResolverImpl implements McpNodeResolver {
       });
     }
 
-    const inputResult = this.converter.convert(tool.inputSchema ?? { type: 'object' }, { providerKey, toolName });
+    const inputResult = this.converter.convert(tool.inputSchema ?? { type: 'object' }, {
+      providerKey,
+      toolName,
+    });
     if (!inputResult.success) {
       throw new PipelineNodeExecutionError(key, {
         kind: 'NODE_EXECUTION',
@@ -120,7 +123,10 @@ export class McpNodeResolverImpl implements McpNodeResolver {
     return spec as NodeSpec;
   }
 
-  private synthesizeOutputSchema(provider: ResolvedProvider, tool: ResolvedTool): z.ZodType<McpToolNodeOutput> {
+  private synthesizeOutputSchema(
+    provider: ResolvedProvider,
+    tool: ResolvedTool
+  ): z.ZodType<McpToolNodeOutput> {
     if (!tool.outputSchema) return GenericMcpOutputSchema;
     const result = this.converter.convert(tool.outputSchema, {
       providerKey: provider.key,

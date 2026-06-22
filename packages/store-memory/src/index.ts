@@ -97,11 +97,11 @@ export class MemoryStore implements PipelineStore, StepRecorder {
     this.pipelines.set(id, pipeline);
     this.nodes.set(
       id,
-      draft.nodes.map((n) => ({ ...n, pipelineId: id })),
+      draft.nodes.map((n) => ({ ...n, pipelineId: id }))
     );
     this.edges.set(
       id,
-      draft.edges.map((e) => ({ ...e, pipelineId: id })),
+      draft.edges.map((e) => ({ ...e, pipelineId: id }))
     );
     return id;
   }
@@ -230,7 +230,9 @@ export class MemoryStore implements PipelineStore, StepRecorder {
 
   // ── Test/inspection helpers ─────────────────────────────────────────────────
 
-  getSteps(runId: string): ReadonlyArray<{ nodeLabel: string; status: RunStepStatus; sequenceIndex: number }> {
+  getSteps(
+    runId: string
+  ): ReadonlyArray<{ nodeLabel: string; status: RunStepStatus; sequenceIndex: number }> {
     return Array.from(this.steps.values())
       .filter((s) => s.runId === runId)
       .sort((a, b) => a.sequenceIndex - b.sequenceIndex)

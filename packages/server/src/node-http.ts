@@ -19,7 +19,7 @@ import { sseFrame, SSE_HEADERS } from './sse.js';
  */
 export function createNodeHttpHandler(
   handlers: PipelineHandlers,
-  opts: { basePath?: string } = {},
+  opts: { basePath?: string } = {}
 ): (req: IncomingMessage, res: ServerResponse) => void {
   const base = opts.basePath ?? '/pipeline';
 
@@ -85,7 +85,11 @@ export function createNodeHttpHandler(
     const runsMatch = rest.match(/^\/([^/]+)\/runs$/);
     if (method === 'GET' && runsMatch) {
       const limit = url.searchParams.get('limit');
-      json(res, 200, await handlers.listRuns(runsMatch[1]!, limit ? { limit: Number(limit) } : undefined));
+      json(
+        res,
+        200,
+        await handlers.listRuns(runsMatch[1]!, limit ? { limit: Number(limit) } : undefined)
+      );
       return;
     }
 

@@ -47,7 +47,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build all packages
         run: pnpm build
-      - name: "Assert no workspace: protocol leaks into packed tarballs"
+      - name: 'Assert no workspace: protocol leaks into packed tarballs'
         run: |
           set -e
           rm -rf /tmp/owf-pack && mkdir -p /tmp/owf-pack

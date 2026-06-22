@@ -47,7 +47,7 @@ describe('analyzeTopology', () => {
     // a -> b, a -> c, b -> d, c -> d
     const t = analyzeTopology(
       [node('a'), node('b'), node('c'), node('d')],
-      [edge('a', 'b'), edge('a', 'c'), edge('b', 'd'), edge('c', 'd')],
+      [edge('a', 'b'), edge('a', 'c'), edge('b', 'd'), edge('c', 'd')]
     );
     expect([...(t.predecessorsByNode.get('d') ?? [])].sort()).toEqual(['b', 'c']);
     expect([...(t.successorsByNode.get('a') ?? [])].sort()).toEqual(['b', 'c']);
@@ -59,7 +59,7 @@ describe('analyzeTopology', () => {
     // a -> c, b -> c, c -> d, c -> e
     const t = analyzeTopology(
       [node('a'), node('b'), node('c'), node('d'), node('e')],
-      [edge('a', 'c'), edge('b', 'c'), edge('c', 'd'), edge('c', 'e')],
+      [edge('a', 'c'), edge('b', 'c'), edge('c', 'd'), edge('c', 'e')]
     );
     expect(t.entryNodes.map((n) => n.id).sort()).toEqual(['a', 'b']);
     expect(t.exitNodes.map((n) => n.id).sort()).toEqual(['d', 'e']);
@@ -94,7 +94,7 @@ describe('computeAncestors', () => {
     // a -> b, a -> c, b -> d, c -> d ; ancestors of d = {a,b,c}, with a first
     const map = compiledMap(
       ['a', 'b', 'c', 'd'],
-      [edge('a', 'b'), edge('a', 'c'), edge('b', 'd'), edge('c', 'd')],
+      [edge('a', 'b'), edge('a', 'c'), edge('b', 'd'), edge('c', 'd')]
     );
     const ancestors = computeAncestors('d', map);
     expect(ancestors.sort()).toEqual(['a', 'b', 'c']);

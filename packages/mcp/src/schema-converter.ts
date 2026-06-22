@@ -87,7 +87,8 @@ function ensureRootObjectType(schema: unknown): unknown {
 }
 
 function extractOffendingKeyword(errMsg: string): string | undefined {
-  const m = errMsg.match(/keyword:\s*['"]?([a-zA-Z$]+)['"]?/i) ?? errMsg.match(/Unsupported (\$?\w+)/i);
+  const m =
+    errMsg.match(/keyword:\s*['"]?([a-zA-Z$]+)['"]?/i) ?? errMsg.match(/Unsupported (\$?\w+)/i);
   return m?.[1];
 }
 
@@ -112,7 +113,7 @@ export class McpSchemaConverter {
         offendingKeyword: extractOffendingKeyword(error),
       };
       this.logger.warn(
-        `[mcp-schema-conversion] ${opts.providerKey}/${opts.toolName} → fromJsonSchema: ${error.slice(0, 120)}`,
+        `[mcp-schema-conversion] ${opts.providerKey}/${opts.toolName} → fromJsonSchema: ${error.slice(0, 120)}`
       );
       return { success: false, reason };
     }

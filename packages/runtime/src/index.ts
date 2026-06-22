@@ -44,7 +44,10 @@ export interface PipelineEngineOptions {
   /** Optional — resolves `mcp:` node keys to specs. Provide with catalogLoader. */
   mcpNodeResolver?: McpNodeResolver;
   /** Optional graph validator run before compilation. Throw to reject. */
-  validate?: (graph: PipelineWithGraph, ctx: { userId?: string; tenantId?: string }) => Promise<void> | void;
+  validate?: (
+    graph: PipelineWithGraph,
+    ctx: { userId?: string; tenantId?: string }
+  ) => Promise<void> | void;
   /** Hard per-run wall-clock timeout. Default 600_000ms. */
   runTimeoutMs?: number;
 }
@@ -196,7 +199,7 @@ export class PipelineEngine {
     runId: string,
     deliveryMode: RunDeliveryMode,
     context: RunContext | undefined,
-    controller: AbortController,
+    controller: AbortController
   ): Promise<RunResult> {
     const hasMcpNode = graph.nodes.some((n) => n.key.startsWith('mcp:'));
     let mcpCatalog: CatalogResult | undefined;
@@ -207,7 +210,10 @@ export class PipelineEngine {
         if (!this.catalogLoader) {
           throw new Error('Graph has MCP nodes but no catalogLoader was configured.');
         }
-        mcpCatalog = await this.catalogLoader.load({ userId: context?.userId, tenantId: context?.tenantId });
+        mcpCatalog = await this.catalogLoader.load({
+          userId: context?.userId,
+          tenantId: context?.tenantId,
+        });
       }
 
       const mcpCatalogCache = mcpCatalog?.providers as readonly unknown[] | undefined;
@@ -262,7 +268,12 @@ export class PipelineEngine {
       const outputs = final?.outputs ?? {};
       const cost = final?.cost ?? ZERO_COST;
 
-      await this.store.completeRun(runId, { status: 'SUCCESS', output: outputs, cost, lastState: final });
+      await this.store.completeRun(runId, {
+        status: 'SUCCESS',
+        output: outputs,
+        cost,
+        lastState: final,
+      });
       this.emit(runId, { kind: 'RUN_COMPLETE', status: 'SUCCESS' });
       return { runId, status: 'SUCCESS', outputs, cost };
     } catch (err) {

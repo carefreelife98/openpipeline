@@ -12,8 +12,18 @@ export { PipelineCompiler, type CompilerDeps, type CompiledPipeline } from './co
 export { translateEvent, type LangGraphStreamEvent } from './event-translator.js';
 
 // Built-in node specs
-export { createIfNodeSpec, IfInputSchema, IfOutputSchema, type IfInput } from './built-in/if-node.js';
-export { createLlmInvokeNodeSpec, LlmOutputSchema, type LlmInput, type LlmNodeOptions } from './built-in/llm-node.js';
+export {
+  createIfNodeSpec,
+  IfInputSchema,
+  IfOutputSchema,
+  type IfInput,
+} from './built-in/if-node.js';
+export {
+  createLlmInvokeNodeSpec,
+  LlmOutputSchema,
+  type LlmInput,
+  type LlmNodeOptions,
+} from './built-in/llm-node.js';
 export {
   extractTokenUsage,
   costFromLlmResponse,

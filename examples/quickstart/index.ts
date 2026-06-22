@@ -33,7 +33,9 @@ const engine = new PipelineEngine({
 
 // Register built-ins + one custom node.
 engine.registerNode(createIfNodeSpec());
-engine.registerNode(createLlmInvokeNodeSpec({ models: ['stub-model'], defaultModel: 'stub-model' }));
+engine.registerNode(
+  createLlmInvokeNodeSpec({ models: ['stub-model'], defaultModel: 'stub-model' })
+);
 engine.registerNode(
   defineNode({
     key: 'tool.uppercase',
@@ -42,12 +44,16 @@ engine.registerNode(
     description: 'Uppercases its input text.',
     icon: 'type',
     inputSchema: z.object({ text: z.string() }),
-    outputSchema: z.object({ kind: z.literal('tool.uppercase'), out: z.string(), nonEmpty: z.boolean() }),
+    outputSchema: z.object({
+      kind: z.literal('tool.uppercase'),
+      out: z.string(),
+      nonEmpty: z.boolean(),
+    }),
     handler: async ({ text }) => {
       const out = text.toUpperCase();
       return { kind: 'tool.uppercase' as const, out, nonEmpty: out.length > 0 };
     },
-  }),
+  })
 );
 
 const pipelineId = await engine.save({

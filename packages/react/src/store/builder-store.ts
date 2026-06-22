@@ -5,7 +5,7 @@ import type { BuilderNode, BuilderEdge } from '../types.js';
 /** Derive entry (no incoming) and exit (no outgoing) nodes. */
 function deriveEntryExit(
   nodes: ReadonlyArray<{ id: string }>,
-  edges: ReadonlyArray<{ fromNodeId: string; toNodeId: string }>,
+  edges: ReadonlyArray<{ fromNodeId: string; toNodeId: string }>
 ): { startTargets: string[]; endSources: string[] } {
   const incoming = new Map<string, number>();
   const outgoing = new Map<string, number>();
@@ -166,7 +166,9 @@ export function createBuilderStore() {
 
     updateMarkerPosition: (which, x, y) =>
       set((s) =>
-        which === 'start' ? { startMarker: { x, y }, dirty: true } : { endMarker: { x, y }, dirty: true },
+        which === 'start'
+          ? { startMarker: { x, y }, dirty: true }
+          : { endMarker: { x, y }, dirty: true }
       ),
 
     updateNodeLabel: (id, label) =>
@@ -175,7 +177,7 @@ export function createBuilderStore() {
     updateNodeInput: (nodeId, paramName, binding) =>
       set((s) => ({
         nodes: s.nodes.map((n) =>
-          n.id === nodeId ? { ...n, inputs: { ...n.inputs, [paramName]: binding } } : n,
+          n.id === nodeId ? { ...n, inputs: { ...n.inputs, [paramName]: binding } } : n
         ),
         dirty: true,
       })),
@@ -194,7 +196,10 @@ export function createBuilderStore() {
     addEdge: (edge) =>
       set((s) => {
         const dup = s.edges.find(
-          (e) => e.fromNodeId === edge.fromNodeId && e.toNodeId === edge.toNodeId && e.label === edge.label,
+          (e) =>
+            e.fromNodeId === edge.fromNodeId &&
+            e.toNodeId === edge.toNodeId &&
+            e.label === edge.label
         );
         if (dup) return {};
         return { edges: [...s.edges, edge], dirty: true };
@@ -207,11 +212,17 @@ export function createBuilderStore() {
       }),
 
     addStartTarget: (nodeId) =>
-      set((s) => (s.startTargets.includes(nodeId) ? {} : { startTargets: [...s.startTargets, nodeId], dirty: true })),
+      set((s) =>
+        s.startTargets.includes(nodeId)
+          ? {}
+          : { startTargets: [...s.startTargets, nodeId], dirty: true }
+      ),
     removeStartTarget: (nodeId) =>
       set((s) => ({ startTargets: s.startTargets.filter((t) => t !== nodeId), dirty: true })),
     addEndSource: (nodeId) =>
-      set((s) => (s.endSources.includes(nodeId) ? {} : { endSources: [...s.endSources, nodeId], dirty: true })),
+      set((s) =>
+        s.endSources.includes(nodeId) ? {} : { endSources: [...s.endSources, nodeId], dirty: true }
+      ),
     removeEndSource: (nodeId) =>
       set((s) => ({ endSources: s.endSources.filter((t) => t !== nodeId), dirty: true })),
 

@@ -29,29 +29,39 @@ describe('ValueBindingResolver.resolveOne', () => {
   });
 
   it('resolves a deeply nested state path', () => {
-    expect(resolver.resolveOne({ kind: 'state', path: 'outputs.nodeA.nested.deep' }, state)).toBe(42);
+    expect(resolver.resolveOne({ kind: 'state', path: 'outputs.nodeA.nested.deep' }, state)).toBe(
+      42
+    );
   });
 
   it('resolves a bracket array index', () => {
-    expect(resolver.resolveOne({ kind: 'state', path: 'outputs.list.items[1]' }, state)).toBe('one');
+    expect(resolver.resolveOne({ kind: 'state', path: 'outputs.list.items[1]' }, state)).toBe(
+      'one'
+    );
   });
 
   it('resolves the dot-bracket index variant', () => {
-    expect(resolver.resolveOne({ kind: 'state', path: 'outputs.list.items.[2]' }, state)).toBe('two');
+    expect(resolver.resolveOne({ kind: 'state', path: 'outputs.list.items.[2]' }, state)).toBe(
+      'two'
+    );
   });
 
   it('returns undefined for a missing key (no throw)', () => {
-    expect(resolver.resolveOne({ kind: 'state', path: 'outputs.nodeA.absent' }, state)).toBeUndefined();
+    expect(
+      resolver.resolveOne({ kind: 'state', path: 'outputs.nodeA.absent' }, state)
+    ).toBeUndefined();
   });
 
   it('returns undefined when traversing through null (no throw)', () => {
-    expect(resolver.resolveOne({ kind: 'state', path: 'outputs.nullish.whatever' }, state)).toBeUndefined();
+    expect(
+      resolver.resolveOne({ kind: 'state', path: 'outputs.nullish.whatever' }, state)
+    ).toBeUndefined();
   });
 
   it('throws on an invalid state path (prototype pollution)', () => {
-    expect(() => resolver.resolveOne({ kind: 'state', path: 'outputs.__proto__.x' }, state)).toThrow(
-      /invalid state\.path/,
-    );
+    expect(() =>
+      resolver.resolveOne({ kind: 'state', path: 'outputs.__proto__.x' }, state)
+    ).toThrow(/invalid state\.path/);
   });
 
   it('throws when asked to resolve an auto binding', () => {

@@ -50,8 +50,9 @@ export function createEnvCatalogLoader(options: EnvCatalogLoaderOptions): Catalo
 
       for (const server of servers) {
         const token =
-          (options.policy?.resolveToken ? await options.policy.resolveToken(server, policyCtx) : undefined) ??
-          server.accessToken;
+          (options.policy?.resolveToken
+            ? await options.policy.resolveToken(server, policyCtx)
+            : undefined) ?? server.accessToken;
 
         let client: MultiServerMCPClient;
         try {
@@ -75,7 +76,7 @@ export function createEnvCatalogLoader(options: EnvCatalogLoaderOptions): Catalo
           const allowed = await options.policy.filterTools(
             tools.map((t) => ({ name: t.name, description: t.description })),
             server,
-            policyCtx,
+            policyCtx
           );
           const allowSet = new Set(allowed.map((t) => t.name));
           tools = tools.filter((t) => allowSet.has(t.name));
@@ -112,8 +113,8 @@ export function createEnvCatalogLoader(options: EnvCatalogLoaderOptions): Catalo
             clients.map((c) =>
               (c as { close?: () => Promise<void> }).close?.().catch((err) => {
                 logger.warn('[mcp] client cleanup failed', { err });
-              }),
-            ),
+              })
+            )
           );
         },
       };

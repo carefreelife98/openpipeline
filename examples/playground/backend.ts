@@ -18,8 +18,16 @@ const upperNode = defineNode({
   description: 'Uppercases its input text.',
   icon: 'type',
   inputSchema: z.object({ text: z.string() }),
-  outputSchema: z.object({ kind: z.literal('tool.uppercase'), out: z.string(), nonEmpty: z.boolean() }),
-  handler: async ({ text }) => ({ kind: 'tool.uppercase' as const, out: text.toUpperCase(), nonEmpty: text.length > 0 }),
+  outputSchema: z.object({
+    kind: z.literal('tool.uppercase'),
+    out: z.string(),
+    nonEmpty: z.boolean(),
+  }),
+  handler: async ({ text }) => ({
+    kind: 'tool.uppercase' as const,
+    out: text.toUpperCase(),
+    nonEmpty: text.length > 0,
+  }),
 });
 
 const reverseNode = defineNode({
@@ -30,27 +38,70 @@ const reverseNode = defineNode({
   icon: 'flip-horizontal',
   inputSchema: z.object({ text: z.string() }),
   outputSchema: z.object({ kind: z.literal('tool.reverse'), out: z.string() }),
-  handler: async ({ text }) => ({ kind: 'tool.reverse' as const, out: [...text].reverse().join('') }),
+  handler: async ({ text }) => ({
+    kind: 'tool.reverse' as const,
+    out: [...text].reverse().join(''),
+  }),
 });
 
 export function createBackend() {
   const engine = new PipelineEngine({
     store: new MemoryStore(),
     // A stub LLM so llm.invoke works without API keys in the demo.
-    llmFactory: { createModel: () => ({ invoke: async (m: unknown) => ({ content: `(demo) ${JSON.stringify(m).slice(0, 60)}`, usage_metadata: { input_tokens: 5, output_tokens: 3, total_tokens: 8 } }) }) },
+    llmFactory: {
+      createModel: () => ({
+        invoke: async (m: unknown) => ({
+          content: `(demo) ${JSON.stringify(m).slice(0, 60)}`,
+          usage_metadata: { input_tokens: 5, output_tokens: 3, total_tokens: 8 },
+        }),
+      }),
+    },
   });
 
   engine.registerNode(createIfNodeSpec());
-  engine.registerNode(createLlmInvokeNodeSpec({ models: ['demo-model'], defaultModel: 'demo-model' }));
+  engine.registerNode(
+    createLlmInvokeNodeSpec({ models: ['demo-model'], defaultModel: 'demo-model' })
+  );
   engine.registerNode(upperNode);
   engine.registerNode(reverseNode);
 
   // The node-spec catalog the builder palette/inspector renders.
   const catalog: NodeSpecDescriptor[] = [
-    { key: 'tool.uppercase', nodeType: 'TOOL', displayName: 'Uppercase', description: 'Uppercases text.', icon: 'type', inputs: [{ name: 'text', required: true }] },
-    { key: 'tool.reverse', nodeType: 'TOOL', displayName: 'Reverse', description: 'Reverses text.', icon: 'flip-horizontal', inputs: [{ name: 'text', required: true }] },
-    { key: 'control.if', nodeType: 'IF', displayName: 'IF', description: 'Branch on a condition.', icon: 'git-branch', inputs: [{ name: 'condition', required: false }] },
-    { key: 'llm.invoke', nodeType: 'LLM', displayName: 'LLM', description: 'Invoke a model.', icon: 'sparkles', inputs: [{ name: 'userPrompt', required: true }, { name: 'model', required: true }] },
+    {
+      key: 'tool.uppercase',
+      nodeType: 'TOOL',
+      displayName: 'Uppercase',
+      description: 'Uppercases text.',
+      icon: 'type',
+      inputs: [{ name: 'text', required: true }],
+    },
+    {
+      key: 'tool.reverse',
+      nodeType: 'TOOL',
+      displayName: 'Reverse',
+      description: 'Reverses text.',
+      icon: 'flip-horizontal',
+      inputs: [{ name: 'text', required: true }],
+    },
+    {
+      key: 'control.if',
+      nodeType: 'IF',
+      displayName: 'IF',
+      description: 'Branch on a condition.',
+      icon: 'git-branch',
+      inputs: [{ name: 'condition', required: false }],
+    },
+    {
+      key: 'llm.invoke',
+      nodeType: 'LLM',
+      displayName: 'LLM',
+      description: 'Invoke a model.',
+      icon: 'sparkles',
+      inputs: [
+        { name: 'userPrompt', required: true },
+        { name: 'model', required: true },
+      ],
+    },
   ];
 
   const handlers = createPipelineHandlers(engine);
@@ -60,8 +111,20 @@ export function createBackend() {
   const seedId = engine.save({
     name: 'starter',
     nodes: [
-      { id: 'u', nodeType: 'TOOL', key: 'tool.uppercase', label: 'Uppercase', inputs: { text: { kind: 'literal', value: 'hello openpipeline' } } },
-      { id: 'r', nodeType: 'TOOL', key: 'tool.reverse', label: 'Reverse', inputs: { text: { kind: 'state', path: 'outputs.u.out' } } },
+      {
+        id: 'u',
+        nodeType: 'TOOL',
+        key: 'tool.uppercase',
+        label: 'Uppercase',
+        inputs: { text: { kind: 'literal', value: 'hello openpipeline' } },
+      },
+      {
+        id: 'r',
+        nodeType: 'TOOL',
+        key: 'tool.reverse',
+        label: 'Reverse',
+        inputs: { text: { kind: 'state', path: 'outputs.u.out' } },
+      },
     ],
     edges: [{ id: 'e1', fromNodeId: 'u', toNodeId: 'r' }],
   });

@@ -21,7 +21,9 @@ const stubLlmFactory = {
 function makeEngine() {
   const engine = new PipelineEngine({ store: new MemoryStore(), llmFactory: stubLlmFactory });
   engine.registerNode(createIfNodeSpec());
-  engine.registerNode(createLlmInvokeNodeSpec({ models: ['stub-model'], defaultModel: 'stub-model' }));
+  engine.registerNode(
+    createLlmInvokeNodeSpec({ models: ['stub-model'], defaultModel: 'stub-model' })
+  );
   engine.registerNode(
     defineNode({
       key: 'tool.uppercase',
@@ -30,12 +32,16 @@ function makeEngine() {
       description: 'Uppercases its input text.',
       icon: 'type',
       inputSchema: z.object({ text: z.string() }),
-      outputSchema: z.object({ kind: z.literal('tool.uppercase'), out: z.string(), nonEmpty: z.boolean() }),
+      outputSchema: z.object({
+        kind: z.literal('tool.uppercase'),
+        out: z.string(),
+        nonEmpty: z.boolean(),
+      }),
       handler: async ({ text }) => {
         const out = text.toUpperCase();
         return { kind: 'tool.uppercase' as const, out, nonEmpty: out.length > 0 };
       },
-    }),
+    })
   );
   return engine;
 }
@@ -147,8 +153,20 @@ describe('PipelineEngine end-to-end', () => {
     const pipelineId = await engine.save({
       name: 'cyclic',
       nodes: [
-        { id: 'a', nodeType: 'TOOL', key: 'tool.uppercase', label: 'A', inputs: { text: { kind: 'literal', value: 'x' } } },
-        { id: 'b', nodeType: 'TOOL', key: 'tool.uppercase', label: 'B', inputs: { text: { kind: 'literal', value: 'y' } } },
+        {
+          id: 'a',
+          nodeType: 'TOOL',
+          key: 'tool.uppercase',
+          label: 'A',
+          inputs: { text: { kind: 'literal', value: 'x' } },
+        },
+        {
+          id: 'b',
+          nodeType: 'TOOL',
+          key: 'tool.uppercase',
+          label: 'B',
+          inputs: { text: { kind: 'literal', value: 'y' } },
+        },
       ],
       edges: [
         { id: 'e1', fromNodeId: 'a', toNodeId: 'b' },

@@ -46,13 +46,20 @@ interface NodeRunnerConfig {
 
 export type NodeRunnerFn = (
   state: PipelineStateType,
-  config?: NodeRunnerConfig,
+  config?: NodeRunnerConfig
 ) => Promise<Partial<PipelineStateType>>;
 
-export function makeNodeRunner(node: PipelineNodeRow, spec: NodeSpec, deps: NodeRunnerDeps): NodeRunnerFn {
+export function makeNodeRunner(
+  node: PipelineNodeRow,
+  spec: NodeSpec,
+  deps: NodeRunnerDeps
+): NodeRunnerFn {
   const logger = deps.logger ?? NOOP_LOGGER;
 
-  return async (state: PipelineStateType, config?: NodeRunnerConfig): Promise<Partial<PipelineStateType>> => {
+  return async (
+    state: PipelineStateType,
+    config?: NodeRunnerConfig
+  ): Promise<Partial<PipelineStateType>> => {
     const signal = config?.configurable?.signal;
 
     const stepId = await deps.stepRecorder.start({
@@ -62,7 +69,9 @@ export function makeNodeRunner(node: PipelineNodeRow, spec: NodeSpec, deps: Node
     });
 
     const startedAt = new Date().toISOString();
-    const events: NodeEvent[] = [{ nodeId: node.id, eventKind: 'NODE_START', timestamp: startedAt, payload: null }];
+    const events: NodeEvent[] = [
+      { nodeId: node.id, eventKind: 'NODE_START', timestamp: startedAt, payload: null },
+    ];
 
     try {
       checkAbort(signal);
@@ -85,14 +94,16 @@ export function makeNodeRunner(node: PipelineNodeRow, spec: NodeSpec, deps: Node
       if (autoSlots.length > 0) {
         if (!deps.autoParamResolver) {
           throw new Error(
-            `Node "${node.label}" has auto-bound slots [${autoSlots.join(', ')}] but no AutoParamResolver was provided.`,
+            `Node "${node.label}" has auto-bound slots [${autoSlots.join(', ')}] but no AutoParamResolver was provided.`
           );
         }
         // remainingSchema must contain ONLY the auto slots. Omit explicit and
         // unspecified keys — leaving unspecified keys would let the resolver
         // fill optional slots and override the author's intent (unset = default).
         const allInputKeys =
-          spec.inputSchema instanceof z.ZodObject ? Object.keys((spec.inputSchema as z.ZodObject).shape) : [];
+          spec.inputSchema instanceof z.ZodObject
+            ? Object.keys((spec.inputSchema as z.ZodObject).shape)
+            : [];
         const keysToOmit = allInputKeys.filter((k) => !autoSlots.includes(k));
         const remainingSchema = computeRemainingSchema(spec.inputSchema, keysToOmit);
 
@@ -145,7 +156,7 @@ export function makeNodeRunner(node: PipelineNodeRow, spec: NodeSpec, deps: Node
       const pipelineError = toPipelineError(err);
       logger.error(
         `[NodeRunner] node FAILED: ${node.label} (id=${node.id.slice(0, 8)}, key=${node.key}) — ` +
-          `${pipelineError.kind}/${pipelineError.code}: ${pipelineError.message?.slice(0, 2000) ?? '(no message)'}`,
+          `${pipelineError.kind}/${pipelineError.code}: ${pipelineError.message?.slice(0, 2000) ?? '(no message)'}`
       );
       if (stepId) {
         try {
@@ -170,7 +181,7 @@ function buildExecutionContext(
   deps: NodeRunnerDeps,
   costAcc: CostAccumulator,
   signal: AbortSignal | undefined,
-  logger: Logger,
+  logger: Logger
 ): NodeExecutionContext {
   return {
     nodeId: node.id,
@@ -196,7 +207,7 @@ function buildExecutionContext(
 function extractPredecessorOutputs(
   state: PipelineStateType,
   selfNodeId: string,
-  nodeMap: ReadonlyMap<string, CompiledNode>,
+  nodeMap: ReadonlyMap<string, CompiledNode>
 ): PipelineStateType['outputs'] {
   const ancestors = computeAncestors(selfNodeId, nodeMap);
   const filtered: PipelineStateType['outputs'] = {};

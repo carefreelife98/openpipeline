@@ -5,7 +5,9 @@ export const IfInputSchema = z.object({
   condition: z
     .unknown()
     .optional()
-    .describe('Value evaluated for truthiness. A state binding is recommended, e.g. outputs.<nodeId>.field'),
+    .describe(
+      'Value evaluated for truthiness. A state binding is recommended, e.g. outputs.<nodeId>.field'
+    ),
 });
 
 export type IfInput = z.infer<typeof IfInputSchema>;

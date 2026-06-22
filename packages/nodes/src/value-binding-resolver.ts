@@ -33,7 +33,7 @@ export class ValueBindingResolver {
   resolveExplicit(
     inputs: NodeInputs,
     state: PipelineStateType,
-    debugCtx?: { nodeId: string; nodeLabel: string },
+    debugCtx?: { nodeId: string; nodeLabel: string }
   ): Record<string, unknown> {
     const result: Record<string, unknown> = {};
     for (const [paramName, binding] of Object.entries(inputs)) {
@@ -46,7 +46,7 @@ export class ValueBindingResolver {
         .map(([param, b]) => `${param}:${b.kind}`)
         .join(' ');
       this.logger.debug(
-        `[ValueBindingResolver] ${debugCtx.nodeLabel} (id=${debugCtx.nodeId.slice(0, 8)}) ${summary || '(no explicit)'}`,
+        `[ValueBindingResolver] ${debugCtx.nodeLabel} (id=${debugCtx.nodeId.slice(0, 8)}) ${summary || '(no explicit)'}`
       );
     }
     return result;

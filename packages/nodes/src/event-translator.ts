@@ -18,7 +18,7 @@ export interface LangGraphStreamEvent {
  */
 export function translateEvent(
   event: LangGraphStreamEvent,
-  knownNodeIds?: ReadonlySet<string>,
+  knownNodeIds?: ReadonlySet<string>
 ): PipelineEvent | null {
   switch (event.event) {
     case 'on_chain_start': {

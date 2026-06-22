@@ -27,7 +27,7 @@ engine.registerNode(
     inputSchema: z.object({ name: z.string() }),
     outputSchema: z.object({ kind: z.literal('tool.greet'), text: z.string() }),
     handler: async ({ name }) => ({ kind: 'tool.greet' as const, text: `Hello, ${name}!` }),
-  }),
+  })
 );
 
 // ── Boot the http server ────────────────────────────────────────────────────

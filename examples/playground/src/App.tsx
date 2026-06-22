@@ -118,7 +118,15 @@ export function App(): React.JSX.Element {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', height: '100%' }}>
       {/* Palette + controls */}
-      <aside style={{ borderRight: '1px solid #e2e8f0', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <aside
+        style={{
+          borderRight: '1px solid #e2e8f0',
+          padding: 12,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+        }}
+      >
         <strong style={{ fontSize: 14 }}>OpenPipeline</strong>
         <span style={{ fontSize: 11, color: '#64748b' }}>Playground</span>
         <hr style={{ width: '100%', border: 'none', borderTop: '1px solid #e2e8f0' }} />
@@ -127,13 +135,23 @@ export function App(): React.JSX.Element {
           <button
             key={spec.key}
             onClick={() => addNode(spec)}
-            style={{ textAlign: 'left', padding: '6px 8px', borderRadius: 6, border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer', fontSize: 12 }}
+            style={{
+              textAlign: 'left',
+              padding: '6px 8px',
+              borderRadius: 6,
+              border: '1px solid #e2e8f0',
+              background: '#fff',
+              cursor: 'pointer',
+              fontSize: 12,
+            }}
           >
             + {spec.displayName}
           </button>
         ))}
         <hr style={{ width: '100%', border: 'none', borderTop: '1px solid #e2e8f0' }} />
-        <button onClick={save} style={btn('#6366f1')}>Save{dirty ? ' *' : ''}</button>
+        <button onClick={save} style={btn('#6366f1')}>
+          Save{dirty ? ' *' : ''}
+        </button>
         <button onClick={run} disabled={running} style={btn(running ? '#94a3b8' : '#10b981')}>
           {running ? 'Running…' : 'Run'}
         </button>

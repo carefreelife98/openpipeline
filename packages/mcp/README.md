@@ -1,6 +1,6 @@
 # @openpipeline/mcp
 
-Optional MCP integration for OpenPipeline: JSON-Schema→Zod converter, MCP client factory, env catalog loader, and mcp:* node resolver.
+Optional MCP integration for OpenPipeline: JSON-Schema→Zod converter, MCP client factory, env catalog loader, and mcp:\* node resolver.
 
 Part of [OpenPipeline](https://github.com/carefreelife98/openpipeline) — a framework-agnostic engine for compiling and running MCP-tool pipelines as LangGraph DAGs.
 

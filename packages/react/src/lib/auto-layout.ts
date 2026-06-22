@@ -26,7 +26,7 @@ export interface LayoutOptions {
 export function layoutWithDagre(
   nodes: ReadonlyArray<LayoutInputNode>,
   edges: ReadonlyArray<LayoutInputEdge>,
-  options: LayoutOptions = {},
+  options: LayoutOptions = {}
 ): Map<string, { x: number; y: number }> {
   const result = new Map<string, { x: number; y: number }>();
   if (nodes.length === 0) return result;

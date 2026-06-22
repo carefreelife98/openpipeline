@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { defineNode, type NodeSpec, type LlmNodeOutput } from '@openpipeline/core';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
-import { costFromLlmResponse, extractTokenUsage, resolveFinishReason, resolveText } from './llm-helpers.js';
+import {
+  costFromLlmResponse,
+  extractTokenUsage,
+  resolveFinishReason,
+  resolveText,
+} from './llm-helpers.js';
 
 export interface LlmNodeOptions {
   /**
@@ -22,7 +27,9 @@ function buildInputSchema(opts: LlmNodeOptions) {
   return z.object({
     userPrompt: z.string().min(1).describe('The user message.'),
     systemPrompt: z.string().optional().describe('Optional system prompt.'),
-    model: (opts.defaultModel ? modelField.default(opts.defaultModel) : modelField).describe('Model id to invoke.'),
+    model: (opts.defaultModel ? modelField.default(opts.defaultModel) : modelField).describe(
+      'Model id to invoke.'
+    ),
     temperature: z.number().min(0).max(2).optional().describe('Sampling temperature (0–2).'),
     maxTokens: z.number().int().positive().optional().describe('Max output tokens.'),
   });
@@ -42,7 +49,9 @@ export const LlmOutputSchema = z.object({
  * returns the text + token usage. Provider-agnostic: it only relies on the
  * LangChain `BaseChatModel` `.invoke()` shape.
  */
-export function createLlmInvokeNodeSpec(opts: LlmNodeOptions = {}): NodeSpec<LlmInput, LlmNodeOutput> {
+export function createLlmInvokeNodeSpec(
+  opts: LlmNodeOptions = {}
+): NodeSpec<LlmInput, LlmNodeOutput> {
   const inputSchema = buildInputSchema(opts) as unknown as z.ZodType<LlmInput>;
   return defineNode<LlmInput, LlmNodeOutput>({
     key: 'llm.invoke',

@@ -62,7 +62,9 @@ function createFakePrisma(): PrismaClientLike {
         if (!row) return null;
         const out = { ...row };
         if (include && (include as Record<string, unknown>).nodes) {
-          out.nodes = [...tables.pipelineNode!.values()].filter((n) => n.pipelineId === row.id && !n.isDeleted);
+          out.nodes = [...tables.pipelineNode!.values()].filter(
+            (n) => n.pipelineId === row.id && !n.isDeleted
+          );
         }
         if (include && (include as Record<string, unknown>).edges) {
           out.edges = [...tables.pipelineEdge!.values()].filter((e) => e.pipelineId === row.id);
@@ -122,13 +124,21 @@ function createFakePrisma(): PrismaClientLike {
       const [i, o, tot, dollars, calls, runId] = values as number[] & string[];
       const run = tables.pipelineRun!.get(runId as string);
       if (run) {
-        const c = (run.cost as { tokens: Record<string, number>; dollars: number; llmCalls: number }) ?? {
+        const c = (run.cost as {
+          tokens: Record<string, number>;
+          dollars: number;
+          llmCalls: number;
+        }) ?? {
           tokens: { input: 0, output: 0, total: 0 },
           dollars: 0,
           llmCalls: 0,
         };
         run.cost = {
-          tokens: { input: c.tokens.input + (i as number), output: c.tokens.output + (o as number), total: c.tokens.total + (tot as number) },
+          tokens: {
+            input: c.tokens.input + (i as number),
+            output: c.tokens.output + (o as number),
+            total: c.tokens.total + (tot as number),
+          },
           dollars: c.dollars + (dollars as number),
           llmCalls: c.llmCalls + (calls as number),
         };
@@ -156,18 +166,50 @@ engine.registerNode(
     description: 'Doubles a number.',
     icon: 'calculator',
     inputSchema: z.object({ n: z.number() }),
-    outputSchema: z.object({ kind: z.literal('tool.double'), result: z.number(), positive: z.boolean() }),
-    handler: async ({ n }) => ({ kind: 'tool.double' as const, result: n * 2, positive: n * 2 > 0 }),
-  }),
+    outputSchema: z.object({
+      kind: z.literal('tool.double'),
+      result: z.number(),
+      positive: z.boolean(),
+    }),
+    handler: async ({ n }) => ({
+      kind: 'tool.double' as const,
+      result: n * 2,
+      positive: n * 2 > 0,
+    }),
+  })
 );
 
 const pipelineId = await store.save({
   name: 'double-then-branch',
   nodes: [
-    { id: 'dbl', nodeType: 'TOOL', key: 'tool.double', label: 'Double', inputs: { n: { kind: 'literal', value: 21 } } },
-    { id: 'gate', nodeType: 'IF', key: 'control.if', label: 'Positive?', inputs: { condition: { kind: 'state', path: 'outputs.dbl.positive' } } },
-    { id: 'yes', nodeType: 'TOOL', key: 'tool.double', label: 'Again', inputs: { n: { kind: 'state', path: 'outputs.dbl.result' } } },
-    { id: 'no', nodeType: 'TOOL', key: 'tool.double', label: 'Zero', inputs: { n: { kind: 'literal', value: 0 } } },
+    {
+      id: 'dbl',
+      nodeType: 'TOOL',
+      key: 'tool.double',
+      label: 'Double',
+      inputs: { n: { kind: 'literal', value: 21 } },
+    },
+    {
+      id: 'gate',
+      nodeType: 'IF',
+      key: 'control.if',
+      label: 'Positive?',
+      inputs: { condition: { kind: 'state', path: 'outputs.dbl.positive' } },
+    },
+    {
+      id: 'yes',
+      nodeType: 'TOOL',
+      key: 'tool.double',
+      label: 'Again',
+      inputs: { n: { kind: 'state', path: 'outputs.dbl.result' } },
+    },
+    {
+      id: 'no',
+      nodeType: 'TOOL',
+      key: 'tool.double',
+      label: 'Zero',
+      inputs: { n: { kind: 'literal', value: 0 } },
+    },
   ],
   edges: [
     { id: 'e1', fromNodeId: 'dbl', toNodeId: 'gate' },

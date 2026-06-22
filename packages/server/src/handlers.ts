@@ -19,10 +19,13 @@ export interface PipelineHandlers {
    */
   runAndStream(
     params: { pipelineId: string; context?: RunContext },
-    onEvent: (event: PipelineEvent) => void,
+    onEvent: (event: PipelineEvent) => void
   ): Promise<{ runId: string; status: string }>;
   /** Start a run without streaming; resolves with the final result. */
-  runPipeline(params: { pipelineId: string; context?: RunContext }): Promise<{ runId: string; status: string }>;
+  runPipeline(params: {
+    pipelineId: string;
+    context?: RunContext;
+  }): Promise<{ runId: string; status: string }>;
   /** Abort an in-flight run. */
   abortRun(runId: string): void;
 }

@@ -79,8 +79,14 @@ export class PipelineCompiler {
     const topo = analyzeTopology(graph.nodes, graph.edges);
     if (topo.entryNodes.length < 1 || topo.exitNodes.length < 1) {
       throw new PipelineCompileError(
-        [{ scope: 'graph', kind: 'TOPOLOGY_NO_ENTRY', message: 'Expected at least one entry and one exit node' }],
-        graph.pipeline.name,
+        [
+          {
+            scope: 'graph',
+            kind: 'TOPOLOGY_NO_ENTRY',
+            message: 'Expected at least one entry and one exit node',
+          },
+        ],
+        graph.pipeline.name
       );
     }
 
@@ -91,7 +97,10 @@ export class PipelineCompiler {
     // reference the complete map. MCP nodes resolve via the registry's resolver.
     const nodeMap = new Map<string, CompiledNode>();
     const resolved = await Promise.all(
-      graph.nodes.map(async (wfNode) => ({ wfNode, spec: await this.deps.registry.get(wfNode.key, ctx) })),
+      graph.nodes.map(async (wfNode) => ({
+        wfNode,
+        spec: await this.deps.registry.get(wfNode.key, ctx),
+      }))
     );
     for (const { wfNode, spec } of resolved) {
       nodeMap.set(wfNode.id, {
@@ -119,7 +128,11 @@ export class PipelineCompiler {
       // all reachable parents complete (asymmetric fan-in would otherwise double-run).
       // `defer` also skips an unreached IF branch without deadlock.
       const isFanIn = compiledNode.predecessors.length >= 2;
-      stateGraph.addNode(wfNode.id as never, runner as never, isFanIn ? { defer: true } : undefined);
+      stateGraph.addNode(
+        wfNode.id as never,
+        runner as never,
+        isFanIn ? { defer: true } : undefined
+      );
     }
 
     const ifBranches: Record<string, { true?: string; false?: string }> = {};
@@ -149,7 +162,7 @@ export class PipelineCompiler {
               message: `IF node "${ifId}" is missing a true/false branch`,
             },
           ],
-          graph.pipeline.name,
+          graph.pipeline.name
         );
       }
       const trueTarget = branches.true;
@@ -163,7 +176,7 @@ export class PipelineCompiler {
           }
           return output.branch as 'true' | 'false';
         },
-        { true: trueTarget as never, false: falseTarget as never },
+        { true: trueTarget as never, false: falseTarget as never }
       );
     }
 

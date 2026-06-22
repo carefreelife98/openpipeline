@@ -113,7 +113,12 @@ export interface StepFinish {
 export interface StepRecorder {
   start(step: StepStart): Promise<string>;
   finish(stepId: string, result: StepFinish): Promise<void>;
-  startChild(params: { runId: string; parentStepId: string; nodeId: string; input: unknown }): Promise<string>;
+  startChild(params: {
+    runId: string;
+    parentStepId: string;
+    nodeId: string;
+    input: unknown;
+  }): Promise<string>;
   finishChild(childStepId: string, result: StepFinish): Promise<void>;
   /** Mark any still-RUNNING steps of a run as FAILED (crash recovery). */
   finalizeStaleSteps(runId: string): Promise<void>;
@@ -164,7 +169,6 @@ export interface CatalogLoader {
 export interface McpNodeResolver {
   resolveSpec(
     key: string,
-    ctx: { userId?: string; tenantId?: string; mcpCatalogCache?: readonly unknown[] },
+    ctx: { userId?: string; tenantId?: string; mcpCatalogCache?: readonly unknown[] }
   ): Promise<NodeSpec>;
 }
-

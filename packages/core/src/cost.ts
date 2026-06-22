@@ -20,7 +20,10 @@ export const ZERO_COST: CostBundle = {
   llmCalls: 0,
 };
 
-export function mergeCost(existing: CostBundle | undefined, updates: CostBundle | undefined): CostBundle {
+export function mergeCost(
+  existing: CostBundle | undefined,
+  updates: CostBundle | undefined
+): CostBundle {
   const e = existing ?? ZERO_COST;
   const u = updates ?? ZERO_COST;
   return {

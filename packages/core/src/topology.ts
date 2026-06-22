@@ -7,7 +7,7 @@ import type { PipelineNodeRow, PipelineEdgeRow, TopologyAnalysis, CompiledNode }
  */
 export function analyzeTopology(
   nodes: readonly PipelineNodeRow[],
-  edges: readonly PipelineEdgeRow[],
+  edges: readonly PipelineEdgeRow[]
 ): TopologyAnalysis {
   const predecessors = new Map<string, string[]>();
   const successors = new Map<string, string[]>();
@@ -35,7 +35,10 @@ export function analyzeTopology(
  * Forward-topological ancestor ids of a node (those that can reach it), in data-
  * flow order. Used to scope predecessor outputs handed to the resolver.
  */
-export function computeAncestors(nodeId: string, nodeMap: ReadonlyMap<string, CompiledNode>): string[] {
+export function computeAncestors(
+  nodeId: string,
+  nodeMap: ReadonlyMap<string, CompiledNode>
+): string[] {
   // Reverse BFS to collect ancestors, then order them forward-topologically.
   const ancestors = new Set<string>();
   const queue = [...(nodeMap.get(nodeId)?.predecessors ?? [])];

@@ -87,7 +87,7 @@ export function createClient(config: McpServerConfig, accessToken?: string): Mul
 /** Get the LangChain tools for a client, filtered by the effective allowlist. */
 export async function getFilteredTools(
   client: MultiServerMCPClient,
-  allowedTools: string[] | null | undefined,
+  allowedTools: string[] | null | undefined
 ): Promise<StructuredTool[]> {
   const tools = await client.getTools();
   if (allowedTools == null) return tools;
@@ -102,7 +102,7 @@ export async function getFilteredTools(
  */
 export async function getRawSchemas(
   client: MultiServerMCPClient,
-  serverKey: string,
+  serverKey: string
 ): Promise<{ inputSchemas: Map<string, unknown>; outputSchemas: Map<string, unknown> }> {
   const inputSchemas = new Map<string, unknown>();
   const outputSchemas = new Map<string, unknown>();
