@@ -1,0 +1,35 @@
+{
+  "name": "@openworkflow/store-prisma",
+  "version": "0.1.0",
+  "description": "Postgres WorkflowStore + StepRecorder adapter for OpenWorkflow (Prisma).",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./schema.prisma": "./prisma/schema.prisma"
+  },
+  "files": ["dist", "prisma"],
+  "scripts": {
+    "prisma:generate": "prisma generate --schema prisma/schema.prisma",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@openworkflow/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@prisma/client": ">=5"
+  },
+  "devDependencies": {
+    "@prisma/client": "^6.1.0",
+    "prisma": "^6.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

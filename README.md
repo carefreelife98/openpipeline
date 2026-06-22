@@ -86,6 +86,7 @@ pnpm install && pnpm build && pnpm example
 | [`@openworkflow/runtime`](./packages/runtime) | `WorkflowEngine` — orchestrates a run end to end over the kernel. |
 | [`@openworkflow/store-memory`](./packages/store-memory) | In-memory `WorkflowStore` + `StepRecorder` reference implementation. |
 | [`@openworkflow/mcp`](./packages/mcp) | Optional MCP integration: JSON-Schema→Zod converter, client factory, env catalog loader, `mcp:*` node resolver, and the `CatalogPolicy` hook. |
+| [`@openworkflow/store-prisma`](./packages/store-prisma) | Postgres `WorkflowStore` + `StepRecorder` adapter (Prisma). Ships a clean 5-model schema with no multi-tenancy. |
 
 ## Bring your own
 
@@ -133,9 +134,25 @@ never sees `companyId` or `scope`.
 > external `$ref`, or `not` cannot be converted to Zod and are skipped (logged).
 > This is a known limit of the single-step JSON-Schema→Zod conversion.
 
+### Postgres persistence
+
+```ts
+import { PrismaWorkflowStore } from '@openworkflow/store-prisma';
+// PrismaClient generated from @openworkflow/store-prisma/schema.prisma
+import { PrismaClient } from './generated/prisma';
+
+const store = new PrismaWorkflowStore(new PrismaClient());
+const engine = new WorkflowEngine({ store, llmFactory });
+```
+
+Apply the schema with `prisma migrate` using the shipped
+`@openworkflow/store-prisma/schema.prisma` (set `OPENWORKFLOW_DATABASE_URL`). The
+schema has **no multi-tenancy** — `userId` is an optional opaque audit string with
+no foreign key. It preserves the production-grade bits: race-free atomic cost
+updates (JSONB) and fan-in-safe step sequencing.
+
 ## Roadmap
 
-- `@openworkflow/store-prisma` — Postgres persistence adapter
 - `@openworkflow/server` — framework-agnostic HTTP + SSE handlers
 - `@openworkflow/react` — the visual DAG builder as a controlled component library
 

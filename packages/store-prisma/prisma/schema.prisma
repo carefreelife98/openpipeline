@@ -1,0 +1,151 @@
+// OpenWorkflow Postgres schema — the clean OSS data model.
+//
+// Deliberately omits all Mate-X multi-tenancy: no creatorId/companyId FK, no
+// scope/purpose/category, no summarizeOnEnd, no canvas markers, no User table.
+// `userId` is an optional opaque audit string with NO foreign key. A host that
+// needs tenancy wraps this store in its own adapter.
+//
+// Generate the client into the package so it ships self-contained:
+//   npx prisma generate --schema prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("OPENWORKFLOW_DATABASE_URL")
+}
+
+enum NodeType {
+  TOOL
+  LLM
+  IF
+  MCP_TOOL
+}
+
+enum RunDeliveryMode {
+  STREAM
+  INVOKE
+}
+
+enum RunStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+  ABORTED
+}
+
+enum RunStepStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+  ABORTED
+}
+
+model Workflow {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name             String   @db.Text
+  description      String?  @db.Text
+  outputJsonSchema Json?    @map("output_json_schema")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  nodes WorkflowNode[]
+  edges WorkflowEdge[]
+  runs  WorkflowRun[]
+
+  @@map("workflow")
+}
+
+model WorkflowNode {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workflowId String   @map("workflow_id") @db.Uuid
+  nodeType   NodeType @map("node_type")
+  key        String   @db.VarChar(255)
+  label      String   @db.Text
+  inputs     Json
+  positionX  Float?   @map("position_x")
+  positionY  Float?   @map("position_y")
+  isDeleted  Boolean  @default(false) @map("is_deleted")
+  deletedAt  DateTime? @map("deleted_at") @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  workflow      Workflow          @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  outgoingEdges WorkflowEdge[]    @relation("EdgeFromNode")
+  incomingEdges WorkflowEdge[]    @relation("EdgeToNode")
+  runSteps      WorkflowRunStep[]
+
+  @@index([workflowId, isDeleted])
+  @@map("workflow_node")
+}
+
+model WorkflowEdge {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workflowId String   @map("workflow_id") @db.Uuid
+  fromNodeId String   @map("from_node_id") @db.Uuid
+  toNodeId   String   @map("to_node_id") @db.Uuid
+  label      String?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  workflow Workflow     @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  fromNode WorkflowNode @relation("EdgeFromNode", fields: [fromNodeId], references: [id], onDelete: Cascade)
+  toNode   WorkflowNode @relation("EdgeToNode", fields: [toNodeId], references: [id], onDelete: Cascade)
+
+  @@unique([workflowId, fromNodeId, toNodeId, label])
+  @@index([toNodeId])
+  @@map("workflow_edge")
+}
+
+model WorkflowRun {
+  id           String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workflowId   String          @map("workflow_id") @db.Uuid
+  // Opaque audit field. No FK, no tenancy semantics.
+  userId       String?         @map("user_id")
+  deliveryMode RunDeliveryMode @map("delivery_mode")
+  triggerSource String?        @map("trigger_source")
+  input        Json
+  output       Json?
+  error        Json?
+  lastState    Json?           @map("last_state")
+  cost         Json
+  status       RunStatus
+  startedAt    DateTime        @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt   DateTime?       @map("finished_at") @db.Timestamptz(6)
+
+  workflow Workflow          @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  steps    WorkflowRunStep[]
+
+  @@index([workflowId, startedAt(sort: Desc)])
+  @@index([status, startedAt])
+  @@map("workflow_run")
+}
+
+model WorkflowRunStep {
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runId         String        @map("run_id") @db.Uuid
+  nodeId        String        @map("node_id") @db.Uuid
+  nodeLabel     String?       @map("node_label")
+  parentStepId  String?       @map("parent_step_id") @db.Uuid
+  status        RunStepStatus
+  input         Json
+  output        Json?
+  error         Json?
+  cost          Json
+  sequenceIndex Int           @map("sequence_index")
+  startedAt     DateTime      @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt    DateTime?     @map("finished_at") @db.Timestamptz(6)
+
+  run      WorkflowRun       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  node     WorkflowNode      @relation(fields: [nodeId], references: [id])
+  parent   WorkflowRunStep?  @relation("StepTree", fields: [parentStepId], references: [id])
+  children WorkflowRunStep[] @relation("StepTree")
+
+  @@unique([runId, sequenceIndex])
+  @@index([parentStepId])
+  @@index([nodeId])
+  @@index([runId, status])
+  @@map("workflow_run_step")
+}

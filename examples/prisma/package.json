@@ -1,0 +1,17 @@
+{
+  "name": "@openworkflow/example-prisma",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@openworkflow/core": "workspace:*",
+    "@openworkflow/nodes": "workspace:*",
+    "@openworkflow/runtime": "workspace:*",
+    "@openworkflow/store-prisma": "workspace:*",
+    "zod": "^4.3.6"
+  }
+}
