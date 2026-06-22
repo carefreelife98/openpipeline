@@ -4,21 +4,24 @@
 // adapter source, import-x ordering, a React block scoped to the visual
 // builder, and eslint-config-prettier LAST so formatting is owned by Prettier.
 //
-// Type-aware linting needs the TS program, so `projectService` is on. The
+// Type-aware linting needs a TS program; this uses a dedicated
+// tsconfig.eslint.json that covers src + tests + root configs. The
 // `prisma/src/generated` dir and all build output are ignored.
 import js from '@eslint/js';
-import tseslint from 'typescript-eslint';
+import { defineConfig } from 'eslint/config';
+import prettier from 'eslint-config-prettier';
 import importX from 'eslint-plugin-import-x';
 import react from 'eslint-plugin-react';
 import reactHooks from 'eslint-plugin-react-hooks';
-import prettier from 'eslint-config-prettier';
+import tseslint from 'typescript-eslint';
 
-export default tseslint.config(
+export default defineConfig(
   // Global ignores — build output, generated client, deps, coverage, docs.
   {
     ignores: [
       '**/dist/**',
       '**/node_modules/**',
+      '.claude/**',
       'coverage/**',
       'packages/store-prisma/src/generated/**',
       'docs/**',
@@ -33,7 +36,11 @@ export default tseslint.config(
   {
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        // Single ESLint-only program covering src + test + root tooling configs
+        // (tsconfig.eslint.json). The per-package build tsconfigs only see
+        // src/**, so a dedicated lint program is how type-aware rules reach the
+        // test files too.
+        project: './tsconfig.eslint.json',
         tsconfigRootDir: import.meta.dirname,
       },
     },

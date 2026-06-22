@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
+
 import { toPipelineError, computeRemainingSchema } from '../src/error-mapping.js';
 
 describe('toPipelineError', () => {
   it('maps a ZodError to a VALIDATION error', () => {
-    const zodErr = z.object({ n: z.number() }).safeParse({ n: 'nope' }).error!;
-    const result = toPipelineError(zodErr);
+    const parsed = z.object({ n: z.number() }).safeParse({ n: 'nope' });
+    if (parsed.success) throw new Error('expected the parse to fail');
+    const result = toPipelineError(parsed.error);
     expect(result.kind).toBe('VALIDATION');
     expect(result.code).toBe('ZOD_PARSE');
     expect(typeof result.message).toBe('string');

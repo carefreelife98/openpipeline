@@ -25,8 +25,8 @@ import { MemoryStore } from '@openpipeline/store-memory';
 
 // A mock CatalogLoader exposing one "weather" provider with one tool.
 const mockCatalogLoader: CatalogLoader = {
-  async load() {
-    return {
+  load() {
+    return Promise.resolve({
       providers: [
         {
           key: 'weather',
@@ -49,22 +49,22 @@ const mockCatalogLoader: CatalogLoader = {
                 },
                 required: ['city', 'summary', 'tempC'],
               },
-              invoke: async (input: unknown) => {
+              invoke: (input: unknown) => {
                 const { city } = input as { city: string };
-                return { city, summary: 'Sunny', tempC: 24 };
+                return Promise.resolve({ city, summary: 'Sunny', tempC: 24 });
               },
             },
           ],
         },
       ],
-      cleanup: async () => {},
-    };
+      cleanup: () => Promise.resolve(),
+    });
   },
 };
 
 const engine = new PipelineEngine({
   store: new MemoryStore(),
-  llmFactory: { createModel: () => ({ invoke: async () => ({ content: '' }) }) },
+  llmFactory: { createModel: () => ({ invoke: () => Promise.resolve({ content: '' }) }) },
   catalogLoader: mockCatalogLoader,
   mcpNodeResolver: new McpNodeResolverImpl(console),
   logger: console,

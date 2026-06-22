@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+
 import { validateStatePath } from '../src/path-validator.js';
 
 describe('validateStatePath', () => {
@@ -63,12 +64,16 @@ describe('validateStatePath', () => {
 
   describe('depth guard', () => {
     it('accepts exactly 16 segments', () => {
-      const path = Array.from({ length: 16 }, (_, i) => (i === 0 ? 'a' : `s${i}`)).join('.');
+      const path = Array.from({ length: 16 }, (_, i) => (i === 0 ? 'a' : `s${String(i)}`)).join(
+        '.'
+      );
       expect(validateStatePath(path)).toEqual({ valid: true });
     });
 
     it('rejects 17 segments', () => {
-      const path = Array.from({ length: 17 }, (_, i) => (i === 0 ? 'a' : `s${i}`)).join('.');
+      const path = Array.from({ length: 17 }, (_, i) => (i === 0 ? 'a' : `s${String(i)}`)).join(
+        '.'
+      );
       expect(validateStatePath(path)).toEqual({ valid: false, error: 'INVALID_DEPTH' });
     });
   });

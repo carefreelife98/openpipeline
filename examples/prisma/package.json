@@ -13,5 +13,8 @@
     "@openpipeline/runtime": "workspace:*",
     "@openpipeline/store-prisma": "workspace:*",
     "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0"
   }
 }

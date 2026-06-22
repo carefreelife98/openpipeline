@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { analyzeTopology, computeAncestors } from '../src/topology.js';
+
 import type { PipelineNodeRow, PipelineEdgeRow, CompiledNode } from '../src/graph.js';
+import { analyzeTopology, computeAncestors } from '../src/topology.js';
 
 function node(id: string): PipelineNodeRow {
   return { id, pipelineId: 'p', nodeType: 'TOOL', key: 'tool.x', label: id, inputs: {} };
@@ -14,16 +15,16 @@ function compiledMap(ids: string[], edges: PipelineEdgeRow[]): ReadonlyMap<strin
   const pred = new Map<string, string[]>(ids.map((id) => [id, []]));
   const succ = new Map<string, string[]>(ids.map((id) => [id, []]));
   for (const e of edges) {
-    pred.get(e.toNodeId)!.push(e.fromNodeId);
-    succ.get(e.fromNodeId)!.push(e.toNodeId);
+    pred.get(e.toNodeId)?.push(e.fromNodeId);
+    succ.get(e.fromNodeId)?.push(e.toNodeId);
   }
   const map = new Map<string, CompiledNode>();
   for (const id of ids) {
     map.set(id, {
       node: node(id),
       spec: {} as CompiledNode['spec'],
-      predecessors: pred.get(id)!,
-      successors: succ.get(id)!,
+      predecessors: pred.get(id) ?? [],
+      successors: succ.get(id) ?? [],
     });
   }
   return map;

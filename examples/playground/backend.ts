@@ -23,11 +23,12 @@ const upperNode = defineNode({
     out: z.string(),
     nonEmpty: z.boolean(),
   }),
-  handler: async ({ text }) => ({
-    kind: 'tool.uppercase' as const,
-    out: text.toUpperCase(),
-    nonEmpty: text.length > 0,
-  }),
+  handler: ({ text }) =>
+    Promise.resolve({
+      kind: 'tool.uppercase' as const,
+      out: text.toUpperCase(),
+      nonEmpty: text.length > 0,
+    }),
 });
 
 const reverseNode = defineNode({
@@ -38,10 +39,8 @@ const reverseNode = defineNode({
   icon: 'flip-horizontal',
   inputSchema: z.object({ text: z.string() }),
   outputSchema: z.object({ kind: z.literal('tool.reverse'), out: z.string() }),
-  handler: async ({ text }) => ({
-    kind: 'tool.reverse' as const,
-    out: [...text].reverse().join(''),
-  }),
+  handler: ({ text }) =>
+    Promise.resolve({ kind: 'tool.reverse' as const, out: Array.from(text).reverse().join('') }),
 });
 
 export function createBackend() {
@@ -50,10 +49,11 @@ export function createBackend() {
     // A stub LLM so llm.invoke works without API keys in the demo.
     llmFactory: {
       createModel: () => ({
-        invoke: async (m: unknown) => ({
-          content: `(demo) ${JSON.stringify(m).slice(0, 60)}`,
-          usage_metadata: { input_tokens: 5, output_tokens: 3, total_tokens: 8 },
-        }),
+        invoke: (m: unknown) =>
+          Promise.resolve({
+            content: `(demo) ${JSON.stringify(m).slice(0, 60)}`,
+            usage_metadata: { input_tokens: 5, output_tokens: 3, total_tokens: 8 },
+          }),
       }),
     },
   });

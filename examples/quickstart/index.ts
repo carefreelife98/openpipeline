@@ -18,10 +18,14 @@ import { z } from 'zod';
 // In a real app this returns a LangChain BaseChatModel.
 const stubLlmFactory = {
   createModel: () => ({
-    invoke: async (messages: unknown[]) => ({
-      content: `(stub echo) ${JSON.stringify(messages).slice(0, 80)}`,
-      usage_metadata: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
-    }),
+    // No real network call here, so we return a resolved Promise rather than
+    // marking the function `async` — it still satisfies the Promise-returning
+    // `.invoke()` contract that the LLM node awaits.
+    invoke: (messages: unknown[]) =>
+      Promise.resolve({
+        content: `(stub echo) ${JSON.stringify(messages).slice(0, 80)}`,
+        usage_metadata: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+      }),
   }),
 };
 
@@ -49,9 +53,11 @@ engine.registerNode(
       out: z.string(),
       nonEmpty: z.boolean(),
     }),
-    handler: async ({ text }) => {
+    // Synchronous work, but the handler contract is Promise-returning, so we
+    // resolve immediately instead of using a redundant `async`.
+    handler: ({ text }) => {
       const out = text.toUpperCase();
-      return { kind: 'tool.uppercase' as const, out, nonEmpty: out.length > 0 };
+      return Promise.resolve({ kind: 'tool.uppercase' as const, out, nonEmpty: out.length > 0 });
     },
   })
 );

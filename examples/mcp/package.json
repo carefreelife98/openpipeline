@@ -9,9 +9,12 @@
   },
   "dependencies": {
     "@openpipeline/core": "workspace:*",
+    "@openpipeline/mcp": "workspace:*",
     "@openpipeline/nodes": "workspace:*",
     "@openpipeline/runtime": "workspace:*",
-    "@openpipeline/mcp": "workspace:*",
     "@openpipeline/store-memory": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0"
   }
 }

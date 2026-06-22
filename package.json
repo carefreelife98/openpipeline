@@ -22,6 +22,8 @@
     "coverage": "vitest run --coverage",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "example": "pnpm --filter @openpipeline/example-quickstart start"
   },
   "devDependencies": {

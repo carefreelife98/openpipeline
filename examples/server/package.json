@@ -14,5 +14,8 @@
     "@openpipeline/server": "workspace:*",
     "@openpipeline/store-memory": "workspace:*",
     "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0"
   }
 }

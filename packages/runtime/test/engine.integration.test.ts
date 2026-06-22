@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
-import { z } from 'zod';
-import { PipelineEngine } from '@openpipeline/runtime';
+import { defineNode } from '@openpipeline/core';
 import { createIfNodeSpec, createLlmInvokeNodeSpec } from '@openpipeline/nodes';
 import { MemoryStore } from '@openpipeline/store-memory';
-import { defineNode } from '@openpipeline/core';
+import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
+
+import { PipelineEngine } from '@openpipeline/runtime';
 
 // End-to-end integration test against the BUILT packages (run `pnpm build`
 // first — CI builds before test). Exercises save -> run -> done through the
@@ -11,10 +12,11 @@ import { defineNode } from '@openpipeline/core';
 
 const stubLlmFactory = {
   createModel: () => ({
-    invoke: async () => ({
-      content: 'stub reply',
-      usage_metadata: { input_tokens: 4, output_tokens: 2, total_tokens: 6 },
-    }),
+    invoke: () =>
+      Promise.resolve({
+        content: 'stub reply',
+        usage_metadata: { input_tokens: 4, output_tokens: 2, total_tokens: 6 },
+      }),
   }),
 };
 
@@ -37,9 +39,9 @@ function makeEngine() {
         out: z.string(),
         nonEmpty: z.boolean(),
       }),
-      handler: async ({ text }) => {
+      handler: ({ text }) => {
         const out = text.toUpperCase();
-        return { kind: 'tool.uppercase' as const, out, nonEmpty: out.length > 0 };
+        return Promise.resolve({ kind: 'tool.uppercase' as const, out, nonEmpty: out.length > 0 });
       },
     })
   );

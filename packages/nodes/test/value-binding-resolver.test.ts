@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
 import type { PipelineStateType, ValueBinding } from '@openpipeline/core';
+import { describe, it, expect } from 'vitest';
+
 import { ValueBindingResolver } from '../src/value-binding-resolver.js';
 
 // The resolver only reads the state via path traversal, so a plain object cast

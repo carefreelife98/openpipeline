@@ -18,8 +18,28 @@ import { PrismaPipelineStore, type PrismaClientLike } from '@openpipeline/store-
 import { z } from 'zod';
 
 // ── Minimal in-memory fake satisfying PrismaClientLike ──────────────────────
+type TableName = 'pipeline' | 'pipelineNode' | 'pipelineEdge' | 'pipelineRun' | 'pipelineRunStep';
+type Row = Record<string, unknown>;
+
+interface Cost {
+  tokens: { input: number; output: number; total: number };
+  dollars: number;
+  llmCalls: number;
+}
+
+const ZERO_COST: Cost = { tokens: { input: 0, output: 0, total: 0 }, dollars: 0, llmCalls: 0 };
+
+/** Narrow a stored `cost` (typed `unknown` on the row) into a `Cost`, defaulting
+ *  to zero when the run has not accrued any cost yet. */
+function asCost(value: unknown): Cost {
+  if (value && typeof value === 'object' && 'tokens' in value) {
+    return value as Cost;
+  }
+  return ZERO_COST;
+}
+
 function createFakePrisma(): PrismaClientLike {
-  const tables: Record<string, Map<string, Record<string, unknown>>> = {
+  const tables: Record<TableName, Map<string, Row>> = {
     pipeline: new Map(),
     pipelineNode: new Map(),
     pipelineEdge: new Map(),
@@ -29,9 +49,9 @@ function createFakePrisma(): PrismaClientLike {
   let seq = 0;
   const id = (p: string) => `${p}_${(seq++).toString(36)}`;
 
-  const matches = (row: Record<string, unknown>, where: unknown): boolean => {
+  const matches = (row: Row, where: unknown): boolean => {
     if (!where || typeof where !== 'object') return true;
-    for (const [k, v] of Object.entries(where as Record<string, unknown>)) {
+    for (const [k, v] of Object.entries(where as Row)) {
       if (v && typeof v === 'object' && 'in' in v) {
         if (!(v as { in: unknown[] }).in.includes(row[k])) return false;
       } else if (row[k] !== v) return false;
@@ -39,57 +59,69 @@ function createFakePrisma(): PrismaClientLike {
     return true;
   };
 
-  const delegate = (name: string) => {
-    const t = tables[name]!;
+  // Coerce an unknown candidate id into a string, generating one if absent.
+  const rowId = (candidate: unknown, table: TableName) =>
+    typeof candidate === 'string' ? candidate : id(table);
+
+  // The delegate methods stay `Promise`-returning (the PrismaModelDelegate
+  // contract is async), but the in-memory bodies have nothing to await, so they
+  // return `Promise.resolve(...)` from a sync function rather than being `async`.
+  const delegate = (name: TableName) => {
+    const t = tables[name];
     return {
-      create: async ({ data }: { data: unknown }) => {
-        const d = data as Record<string, unknown>;
-        const rid = (d.id as string) ?? id(name);
-        const row = { ...d, id: rid, startedAt: new Date(), sequenceIndex: d.sequenceIndex ?? 0 };
+      create: ({ data }: { data: unknown }) => {
+        const d = data as Row;
+        const rid = rowId(d.id, name);
+        const row: Row = {
+          ...d,
+          id: rid,
+          startedAt: new Date(),
+          sequenceIndex: d.sequenceIndex ?? 0,
+        };
         t.set(rid, row);
-        return row as { id: string };
+        return Promise.resolve(row as { id: string });
       },
-      createMany: async ({ data }: { data: unknown[] }) => {
+      createMany: ({ data }: { data: unknown[] }) => {
         for (const d0 of data) {
-          const d = d0 as Record<string, unknown>;
-          const rid = (d.id as string) ?? id(name);
+          const d = d0 as Row;
+          const rid = rowId(d.id, name);
           t.set(rid, { ...d, id: rid });
         }
-        return { count: data.length };
+        return Promise.resolve({ count: data.length });
       },
-      findUnique: async ({ where, include }: { where: unknown; include?: unknown }) => {
+      findUnique: ({ where, include }: { where: unknown; include?: unknown }) => {
         const row = t.get((where as { id: string }).id);
-        if (!row) return null;
-        const out = { ...row };
-        if (include && (include as Record<string, unknown>).nodes) {
-          out.nodes = [...tables.pipelineNode!.values()].filter(
+        if (!row) return Promise.resolve(null);
+        const out: Row = { ...row };
+        if (include && (include as Row).nodes) {
+          out.nodes = [...tables.pipelineNode.values()].filter(
             (n) => n.pipelineId === row.id && !n.isDeleted
           );
         }
-        if (include && (include as Record<string, unknown>).edges) {
-          out.edges = [...tables.pipelineEdge!.values()].filter((e) => e.pipelineId === row.id);
+        if (include && (include as Row).edges) {
+          out.edges = [...tables.pipelineEdge.values()].filter((e) => e.pipelineId === row.id);
         }
-        return out;
+        return Promise.resolve(out);
       },
-      findFirst: async ({ where, orderBy }: { where?: unknown; orderBy?: unknown }) => {
+      findFirst: ({ where, orderBy }: { where?: unknown; orderBy?: unknown }) => {
         let rows = [...t.values()].filter((r) => matches(r, where));
         if (orderBy && (orderBy as { sequenceIndex?: string }).sequenceIndex === 'desc') {
           rows = rows.sort((a, b) => (b.sequenceIndex as number) - (a.sequenceIndex as number));
         }
-        return rows[0] ?? null;
+        return Promise.resolve(rows[0] ?? null);
       },
-      findMany: async ({ where, take }: { where?: unknown; take?: number } = {}) => {
+      findMany: ({ where, take }: { where?: unknown; take?: number } = {}) => {
         let rows = [...t.values()].filter((r) => matches(r, where));
         if (take) rows = rows.slice(0, take);
-        return rows;
+        return Promise.resolve(rows);
       },
-      update: async ({ where, data }: { where: unknown; data: unknown }) => {
+      update: ({ where, data }: { where: unknown; data: unknown }) => {
         const rid = (where as { id: string }).id;
-        const row = { ...t.get(rid), ...(data as object), id: rid } as Record<string, unknown>;
+        const row = { ...t.get(rid), ...(data as object), id: rid } as Row;
         t.set(rid, row);
-        return row as { id: string };
+        return Promise.resolve(row as { id: string });
       },
-      updateMany: async ({ where, data }: { where: unknown; data: unknown }) => {
+      updateMany: ({ where, data }: { where: unknown; data: unknown }) => {
         let n = 0;
         for (const [rid, row] of t) {
           if (matches(row, where)) {
@@ -97,9 +129,9 @@ function createFakePrisma(): PrismaClientLike {
             n++;
           }
         }
-        return { count: n };
+        return Promise.resolve({ count: n });
       },
-      deleteMany: async ({ where }: { where: unknown }) => {
+      deleteMany: ({ where }: { where: unknown }) => {
         let n = 0;
         for (const [rid, row] of t) {
           if (matches(row, where)) {
@@ -107,7 +139,7 @@ function createFakePrisma(): PrismaClientLike {
             n++;
           }
         }
-        return { count: n };
+        return Promise.resolve({ count: n });
       },
     };
   };
@@ -119,31 +151,25 @@ function createFakePrisma(): PrismaClientLike {
     pipelineRun: delegate('pipelineRun'),
     pipelineRunStep: delegate('pipelineRunStep'),
     $transaction: async (fn) => fn(client),
-    $executeRawUnsafe: async (_query, ...values) => {
-      // Emulate the atomic cost UPDATE: last value is runId, first five are deltas.
-      const [i, o, tot, dollars, calls, runId] = values as number[] & string[];
-      const run = tables.pipelineRun!.get(runId as string);
+    $executeRawUnsafe: (_query, ...values) => {
+      // Emulate the atomic cost UPDATE: the store passes five numeric deltas
+      // followed by the runId. Coerce each positional param explicitly rather
+      // than trusting the `unknown[]` shape.
+      const [i, o, tot, dollars, calls, runId] = values;
+      const run = tables.pipelineRun.get(String(runId));
       if (run) {
-        const c = (run.cost as {
-          tokens: Record<string, number>;
-          dollars: number;
-          llmCalls: number;
-        }) ?? {
-          tokens: { input: 0, output: 0, total: 0 },
-          dollars: 0,
-          llmCalls: 0,
-        };
+        const prev = asCost(run.cost);
         run.cost = {
           tokens: {
-            input: c.tokens.input + (i as number),
-            output: c.tokens.output + (o as number),
-            total: c.tokens.total + (tot as number),
+            input: prev.tokens.input + Number(i),
+            output: prev.tokens.output + Number(o),
+            total: prev.tokens.total + Number(tot),
           },
-          dollars: c.dollars + (dollars as number),
-          llmCalls: c.llmCalls + (calls as number),
+          dollars: prev.dollars + Number(dollars),
+          llmCalls: prev.llmCalls + Number(calls),
         };
       }
-      return 1;
+      return Promise.resolve(1);
     },
   };
   return client;
@@ -153,7 +179,7 @@ function createFakePrisma(): PrismaClientLike {
 const store = new PrismaPipelineStore(createFakePrisma());
 const engine = new PipelineEngine({
   store,
-  llmFactory: { createModel: () => ({ invoke: async () => ({ content: '' }) }) },
+  llmFactory: { createModel: () => ({ invoke: () => Promise.resolve({ content: '' }) }) },
   logger: console,
 });
 
@@ -171,11 +197,8 @@ engine.registerNode(
       result: z.number(),
       positive: z.boolean(),
     }),
-    handler: async ({ n }) => ({
-      kind: 'tool.double' as const,
-      result: n * 2,
-      positive: n * 2 > 0,
-    }),
+    handler: ({ n }) =>
+      Promise.resolve({ kind: 'tool.double' as const, result: n * 2, positive: n * 2 > 0 }),
   })
 );
 
