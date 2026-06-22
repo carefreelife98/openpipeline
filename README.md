@@ -87,6 +87,7 @@ pnpm install && pnpm build && pnpm example
 | [`@openworkflow/store-memory`](./packages/store-memory) | In-memory `WorkflowStore` + `StepRecorder` reference implementation. |
 | [`@openworkflow/mcp`](./packages/mcp) | Optional MCP integration: JSON-Schema→Zod converter, client factory, env catalog loader, `mcp:*` node resolver, and the `CatalogPolicy` hook. |
 | [`@openworkflow/store-prisma`](./packages/store-prisma) | Postgres `WorkflowStore` + `StepRecorder` adapter (Prisma). Ships a clean 5-model schema with no multi-tenancy. |
+| [`@openworkflow/server`](./packages/server) | Transport-agnostic HTTP + SSE handlers, plus a tiny Node `http` adapter. Streams live run events. |
 
 ## Bring your own
 
@@ -151,9 +152,26 @@ schema has **no multi-tenancy** — `userId` is an optional opaque audit string 
 no foreign key. It preserves the production-grade bits: race-free atomic cost
 updates (JSONB) and fan-in-safe step sequencing.
 
+### HTTP + live events (SSE)
+
+```ts
+import { createServer } from 'node:http';
+import { createWorkflowHandlers, createNodeHttpHandler } from '@openworkflow/server';
+
+const handlers = createWorkflowHandlers(engine);
+createServer(createNodeHttpHandler(handlers)).listen(3000);
+// POST /workflow, GET /workflow/:id, GET /workflow/:id/runs,
+// POST /workflow/run, GET /workflow/runs/:runId/stream?workflowId=... (SSE)
+```
+
+`WorkflowHandlers` are plain async functions with no framework dependency — mount
+them into Express/Fastify/Hono, or use the bundled Node `http` adapter. Live run
+events (`NODE_START` / `NODE_END` / `RUN_COMPLETE`, with node output + timing) are
+streamed via SSE — the engine drives them from LangGraph `streamEvents`, and you
+can also subscribe directly with `engine.onEvent(runId, listener)`.
+
 ## Roadmap
 
-- `@openworkflow/server` — framework-agnostic HTTP + SSE handlers
 - `@openworkflow/react` — the visual DAG builder as a controlled component library
 
 ## License

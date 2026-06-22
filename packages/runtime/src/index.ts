@@ -20,12 +20,16 @@ import {
   type CatalogResult,
   type WorkflowWithGraph,
   type NodeSpec,
+  type WorkflowEvent,
+  type WorkflowEventListener,
 } from '@openworkflow/core';
 import {
   NodeSpecRegistry,
   ValueBindingResolver,
   WorkflowCompiler,
+  translateEvent,
   type AutoParamResolver,
+  type LangGraphStreamEvent,
 } from '@openworkflow/nodes';
 
 export interface WorkflowEngineOptions {
@@ -80,6 +84,7 @@ export class WorkflowEngine {
   private readonly runTimeoutMs: number;
   private readonly catalogLoader?: CatalogLoader;
   private readonly inFlight = new Map<string, AbortController>();
+  private readonly listeners = new Map<string, Set<WorkflowEventListener>>();
 
   constructor(private readonly options: WorkflowEngineOptions) {
     this.store = options.store;
@@ -109,6 +114,11 @@ export class WorkflowEngine {
     return this.store.save(draft);
   }
 
+  /** Load a workflow graph (workflow + nodes + edges). */
+  load(workflowId: string): Promise<WorkflowWithGraph> {
+    return this.store.load(workflowId);
+  }
+
   listRuns(workflowId: string, opts?: { limit?: number }): Promise<RunSummary[]> {
     return this.store.listRuns(workflowId, opts);
   }
@@ -116,6 +126,35 @@ export class WorkflowEngine {
   /** Abort an in-flight run by id. No-op if the run is unknown or finished. */
   abort(runId: string): void {
     this.inFlight.get(runId)?.abort();
+  }
+
+  /**
+   * Subscribe to live events for a run (NODE_START/END/FAILED, LLM_CHUNK,
+   * RUN_COMPLETE). Returns an unsubscribe function. Subscribe before the run's
+   * `done` resolves to catch all events; events are fire-and-forget (no replay).
+   */
+  onEvent(runId: string, listener: WorkflowEventListener): () => void {
+    let set = this.listeners.get(runId);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(runId, set);
+    }
+    set.add(listener);
+    return () => {
+      this.listeners.get(runId)?.delete(listener);
+    };
+  }
+
+  private emit(runId: string, event: WorkflowEvent): void {
+    const set = this.listeners.get(runId);
+    if (!set) return;
+    for (const listener of set) {
+      try {
+        listener(event);
+      } catch {
+        // a listener throwing must not break the run
+      }
+    }
   }
 
   /**
@@ -144,6 +183,8 @@ export class WorkflowEngine {
 
     const done = this.execute(graph, runId, deliveryMode, opts.context, controller).finally(() => {
       this.inFlight.delete(runId);
+      // Defer listener cleanup a tick so any synchronous post-`done` reads land.
+      queueMicrotask(() => this.listeners.delete(runId));
     });
 
     return { runId, done };
@@ -194,15 +235,34 @@ export class WorkflowEngine {
         events: [],
       };
 
-      const final = (await compiled.app.invoke(initialState, {
+      const knownNodeIds = new Set(graph.nodes.map((n) => n.id));
+
+      // streamEvents drives live per-node events; we accumulate the final state
+      // from the top-level on_chain_end so we still get outputs + cost.
+      let final: WorkflowStateType | undefined;
+      const stream = compiled.app.streamEvents(initialState, {
+        version: 'v2',
         configurable: { signal: controller.signal },
         recursionLimit: 100,
-      })) as WorkflowStateType;
+        signal: controller.signal,
+      });
 
-      const outputs = final.outputs ?? {};
-      const cost = final.cost ?? ZERO_COST;
+      for await (const raw of stream) {
+        const evt = raw as LangGraphStreamEvent & { data?: { output?: unknown } };
+        const translated = translateEvent(evt, knownNodeIds);
+        if (translated) this.emit(runId, translated);
+        // Capture the top-level graph output (no langgraph_node metadata).
+        if (evt.event === 'on_chain_end' && !evt.metadata?.langgraph_node) {
+          const out = (evt.data as { output?: WorkflowStateType })?.output;
+          if (out && typeof out === 'object' && 'outputs' in out) final = out;
+        }
+      }
+
+      const outputs = final?.outputs ?? {};
+      const cost = final?.cost ?? ZERO_COST;
 
       await this.store.completeRun(runId, { status: 'SUCCESS', output: outputs, cost, lastState: final });
+      this.emit(runId, { kind: 'RUN_COMPLETE', status: 'SUCCESS' });
       return { runId, status: 'SUCCESS', outputs, cost };
     } catch (err) {
       const aborted = err instanceof WorkflowAbortedError || controller.signal.aborted;
@@ -215,6 +275,7 @@ export class WorkflowEngine {
         status,
         error: { kind: aborted ? 'ABORTED' : 'RUNTIME', code: 'RUN', message },
       });
+      this.emit(runId, { kind: 'RUN_COMPLETE', status });
       return {
         runId,
         status,
@@ -241,4 +302,6 @@ export type {
   LlmFactory,
   CatalogLoader,
   RunContext,
+  WorkflowEvent,
+  WorkflowEventListener,
 } from '@openworkflow/core';

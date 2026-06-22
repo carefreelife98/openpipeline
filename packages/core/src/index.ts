@@ -11,5 +11,6 @@ export * from './node-spec.js';
 export * from './graph.js';
 export * from './contracts.js';
 export * from './errors.js';
+export * from './events.js';
 export * from './topology.js';
 export * from './error-mapping.js';

@@ -69,6 +69,27 @@ importers:
         specifier: ^4.3.6
         version: 4.4.3
 
+  examples/server:
+    dependencies:
+      '@openworkflow/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@openworkflow/nodes':
+        specifier: workspace:*
+        version: link:../../packages/nodes
+      '@openworkflow/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
+      '@openworkflow/server':
+        specifier: workspace:*
+        version: link:../../packages/server
+      '@openworkflow/store-memory':
+        specifier: workspace:*
+        version: link:../../packages/store-memory
+      zod:
+        specifier: ^4.3.6
+        version: 4.4.3
+
   packages/core:
     dependencies:
       '@langchain/langgraph':
@@ -119,6 +140,19 @@ importers:
       '@openworkflow/nodes':
         specifier: workspace:*
         version: link:../nodes
+
+  packages/server:
+    dependencies:
+      '@openworkflow/core':
+        specifier: workspace:*
+        version: link:../core
+      '@openworkflow/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.0
 
   packages/store-memory:
     dependencies:
@@ -400,6 +434,9 @@ packages:
 
   '@types/json-schema@7.0.15':
     resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
+
+  '@types/node@22.20.0':
+    resolution: {integrity: sha512-QWlFW2wf3nTjC13/DqRnBpR4ZO36VJH/JVBkA/vcnmbTBNQIlnObqyqZE1tUR7+Ni23Lda8R1BxMfbXRpCUx5g==}
 
   accepts@2.0.0:
     resolution: {integrity: sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==}
@@ -923,6 +960,9 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
+  undici-types@6.21.0:
+    resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
+
   unpipe@1.0.0:
     resolution: {integrity: sha512-pjy2bYhSsufwWlKwPc+l3cN7+wuJlK6uz0YdJEOlQDbl6jo/YlPi4mb8agUkVC8BF7V8NuzeyPNqRksA3hztKQ==}
     engines: {node: '>= 0.8'}
@@ -1154,6 +1194,10 @@ snapshots:
   '@standard-schema/spec@1.1.0': {}
 
   '@types/json-schema@7.0.15': {}
+
+  '@types/node@22.20.0':
+    dependencies:
+      undici-types: 6.21.0
 
   accepts@2.0.0:
     dependencies:
@@ -1689,6 +1733,8 @@ snapshots:
       mime-types: 3.0.2
 
   typescript@5.9.3: {}
+
+  undici-types@6.21.0: {}
 
   unpipe@1.0.0: {}
 

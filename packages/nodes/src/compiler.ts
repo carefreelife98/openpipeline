@@ -21,7 +21,10 @@ export interface CompiledWorkflow {
   workflowId: string;
   workflowName: string;
   // LangGraph's compiled app; typed loosely to keep its generics off the surface.
-  app: { invoke: (input: unknown, config?: unknown) => Promise<unknown> };
+  app: {
+    invoke: (input: unknown, config?: unknown) => Promise<unknown>;
+    streamEvents: (input: unknown, config?: unknown) => AsyncIterable<unknown>;
+  };
   entryNodeIds: readonly string[];
   exitNodeIds: readonly string[];
   nodeMap: ReadonlyMap<string, CompiledNode>;

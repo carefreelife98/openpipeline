@@ -9,6 +9,7 @@ export {
 } from './auto-param-resolver.js';
 export { makeNodeRunner, type NodeRunnerFn, type NodeRunnerDeps } from './node-runner.js';
 export { WorkflowCompiler, type CompilerDeps, type CompiledWorkflow } from './compiler.js';
+export { translateEvent, type LangGraphStreamEvent } from './event-translator.js';
 
 // Built-in node specs
 export { createIfNodeSpec, IfInputSchema, IfOutputSchema, type IfInput } from './built-in/if-node.js';
