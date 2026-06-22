@@ -64,8 +64,8 @@ export function buildDisplayEdges(
   endSources: string[]
 ): RfEdge[] {
   const result: RfEdge[] = stateEdges.map((e) => {
-    const isIfBranch = e.label === 'true' || e.label === 'false';
-    const sourceHandle = isIfBranch ? `branch-${e.label}` : undefined;
+    const sourceHandle =
+      e.label === 'true' || e.label === 'false' ? `branch-${e.label}` : undefined;
     return {
       id: e.id,
       source: e.fromNodeId,

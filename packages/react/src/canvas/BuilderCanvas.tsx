@@ -96,10 +96,11 @@ export function BuilderCanvas(props: BuilderCanvasProps): React.JSX.Element {
       start: strings.startLabel,
       end: strings.endLabel,
     });
-    if (!props.nodeRunStatus) return built;
+    const runStatus = props.nodeRunStatus;
+    if (!runStatus) return built;
     return built.map((n) =>
       n.type === 'pipelineNode'
-        ? { ...n, data: { ...(n.data as PipelineNodeData), runStatus: props.nodeRunStatus![n.id] } }
+        ? { ...n, data: { ...(n.data as PipelineNodeData), runStatus: runStatus[n.id] } }
         : n
     );
   }, [nodes, startMarker, endMarker, strings.startLabel, strings.endLabel, props.nodeRunStatus]);

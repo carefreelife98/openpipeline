@@ -27,9 +27,10 @@ export function createIfNodeSpec(): NodeSpec<IfInput, IfNodeOutput> {
     icon: 'git-branch',
     inputSchema: IfInputSchema,
     outputSchema: IfOutputSchema,
-    handler: async (input) => ({
-      kind: 'control.if',
-      branch: input.condition ? 'true' : 'false',
-    }),
+    handler: (input) =>
+      Promise.resolve({
+        kind: 'control.if',
+        branch: input.condition ? 'true' : 'false',
+      }),
   });
 }

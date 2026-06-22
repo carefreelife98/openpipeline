@@ -14,8 +14,9 @@
  * those constructs will have tools silently absent; this is documented, not hidden.
  */
 import { NOOP_LOGGER, type Logger } from '@openpipeline/core';
-import { z } from 'zod';
+import type { z } from 'zod';
 import { fromJSONSchema } from 'zod/v4';
+import type { JSONSchema } from 'zod/v4/core';
 
 export type ConversionFailureReason = {
   kind: 'fromJsonSchema_throw';
@@ -61,8 +62,10 @@ function dereferenceAllRefs(schema: unknown): unknown {
         const newVisited = new Set(visited);
         newVisited.add(refPath);
         const resolvedDeref = visit(resolved, newVisited);
-        const { $ref: _ref, ...rest } = obj;
-        return { ...(resolvedDeref as object), ...rest };
+        // Merge sibling keywords over the resolved target, dropping the now-inlined `$ref`.
+        const siblings: Record<string, unknown> = { ...obj };
+        delete siblings.$ref;
+        return { ...(resolvedDeref as object), ...siblings };
       }
       return obj;
     }
@@ -101,9 +104,12 @@ export class McpSchemaConverter {
   constructor(private readonly logger: Logger = NOOP_LOGGER) {}
 
   convert(jsonSchema: unknown, opts: ConvertOptions): McpSchemaConversionResult {
-    const derefed = ensureRootObjectType(dereferenceAllRefs(jsonSchema));
+    // The normalizers operate on `unknown` arbitrary input but, by contract, this
+    // method receives a tool's JSON Schema — assert to the concrete JSON Schema
+    // shape so `fromJSONSchema` (which itself throws on unsupported keywords) types.
+    const derefed = ensureRootObjectType(dereferenceAllRefs(jsonSchema)) as JSONSchema.JSONSchema;
     try {
-      const zodSchema = fromJSONSchema(derefed as never);
+      const zodSchema = fromJSONSchema(derefed);
       return { success: true, zodSchema };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);

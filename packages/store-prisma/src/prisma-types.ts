@@ -3,6 +3,15 @@
 // build and typecheck WITHOUT running `prisma generate` first, and keeps generated
 // code out of source control. Any PrismaClient generated from this package's
 // schema.prisma satisfies it structurally.
+//
+// The delegate methods are generic over the row shape they return and the data
+// shape they accept. Each call site supplies the precise `select`/`include`
+// projection it reads, so results are fully typed and no `as`-cast is needed to
+// access columns. JSON-valued columns are modelled as `JsonInput` (any JSON-
+// serializable value); the host's real Prisma client validates them at runtime.
+
+/** Any value that can be persisted to a Prisma `Json` column. */
+export type JsonInput = unknown;
 
 export interface PrismaDelegateFindArgs {
   where?: unknown;
@@ -10,17 +19,20 @@ export interface PrismaDelegateFindArgs {
   select?: unknown;
   include?: unknown;
   take?: number;
-  data?: unknown;
 }
 
 export interface PrismaModelDelegate {
-  create(args: { data: unknown }): Promise<{ id: string; [k: string]: unknown }>;
-  createMany(args: { data: unknown[]; skipDuplicates?: boolean }): Promise<{ count: number }>;
-  findUnique(args: { where: unknown; include?: unknown }): Promise<Record<string, unknown> | null>;
-  findFirst(args: PrismaDelegateFindArgs): Promise<Record<string, unknown> | null>;
-  findMany(args?: PrismaDelegateFindArgs): Promise<Record<string, unknown>[]>;
-  update(args: { where: unknown; data: unknown }): Promise<{ id: string; [k: string]: unknown }>;
-  updateMany(args: { where: unknown; data: unknown }): Promise<{ count: number }>;
+  create<TRow extends { id: string }>(args: { data: object }): Promise<TRow>;
+  createMany(args: { data: object[]; skipDuplicates?: boolean }): Promise<{ count: number }>;
+  findUnique<TRow>(args: {
+    where: unknown;
+    include?: unknown;
+    select?: unknown;
+  }): Promise<TRow | null>;
+  findFirst<TRow>(args: PrismaDelegateFindArgs): Promise<TRow | null>;
+  findMany<TRow>(args?: PrismaDelegateFindArgs): Promise<TRow[]>;
+  update<TRow extends { id: string }>(args: { where: unknown; data: object }): Promise<TRow>;
+  updateMany(args: { where: unknown; data: object }): Promise<{ count: number }>;
   deleteMany(args: { where: unknown }): Promise<{ count: number }>;
 }
 

@@ -18,7 +18,7 @@ function markerStyle(color: string): React.CSSProperties {
 }
 
 export function StartMarker(props: NodeProps): React.JSX.Element {
-  const label = (props.data as { label?: string })?.label ?? 'Start';
+  const label = (props.data as { label?: string }).label ?? 'Start';
   return (
     <div style={markerStyle('#10b981')}>
       {label}
@@ -28,7 +28,7 @@ export function StartMarker(props: NodeProps): React.JSX.Element {
 }
 
 export function EndMarker(props: NodeProps): React.JSX.Element {
-  const label = (props.data as { label?: string })?.label ?? 'End';
+  const label = (props.data as { label?: string }).label ?? 'End';
   return (
     <div style={markerStyle('#94a3b8')}>
       {label}

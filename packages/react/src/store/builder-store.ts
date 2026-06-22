@@ -38,33 +38,33 @@ export interface BuilderState {
   dirty: boolean;
 
   // ── actions ──
-  loadDraft(draft: PipelineDraft & { id?: string }): void;
-  reset(): void;
-  setName(name: string): void;
-  setDescription(d: string): void;
-  addNode(node: BuilderNode): void;
-  removeNode(id: string): void;
-  updateNodePosition(id: string, x: number, y: number): void;
-  setNodePositions(positions: ReadonlyArray<{ id: string; x: number; y: number }>): void;
-  updateMarkerPosition(which: 'start' | 'end', x: number, y: number): void;
-  updateNodeLabel(id: string, label: string): void;
-  updateNodeInput(nodeId: string, paramName: string, binding: ValueBinding): void;
-  removeNodeInput(nodeId: string, paramName: string): void;
-  addEdge(edge: BuilderEdge): void;
-  removeEdge(edgeId: string): void;
-  addStartTarget(nodeId: string): void;
-  removeStartTarget(nodeId: string): void;
-  addEndSource(nodeId: string): void;
-  removeEndSource(nodeId: string): void;
-  selectNode(id: string | null): void;
-  markClean(): void;
-  toDraft(): PipelineDraft;
+  // Declared as function-property signatures (not method signatures) because
+  // these are Zustand actions: they hold no meaningful `this` and are designed
+  // to be selected/destructured and called standalone (e.g. `useStore((s) =>
+  // s.addNode)`). Property syntax avoids unbound-method false positives and
+  // gives strict contravariant parameter checking.
+  loadDraft: (draft: PipelineDraft & { id?: string }) => void;
+  reset: () => void;
+  setName: (name: string) => void;
+  setDescription: (d: string) => void;
+  addNode: (node: BuilderNode) => void;
+  removeNode: (id: string) => void;
+  updateNodePosition: (id: string, x: number, y: number) => void;
+  setNodePositions: (positions: ReadonlyArray<{ id: string; x: number; y: number }>) => void;
+  updateMarkerPosition: (which: 'start' | 'end', x: number, y: number) => void;
+  updateNodeLabel: (id: string, label: string) => void;
+  updateNodeInput: (nodeId: string, paramName: string, binding: ValueBinding) => void;
+  removeNodeInput: (nodeId: string, paramName: string) => void;
+  addEdge: (edge: BuilderEdge) => void;
+  removeEdge: (edgeId: string) => void;
+  addStartTarget: (nodeId: string) => void;
+  removeStartTarget: (nodeId: string) => void;
+  addEndSource: (nodeId: string) => void;
+  removeEndSource: (nodeId: string) => void;
+  selectNode: (id: string | null) => void;
+  markClean: () => void;
+  toDraft: () => PipelineDraft;
 }
-
-const genId = (): string =>
-  typeof crypto !== 'undefined' && 'randomUUID' in crypto
-    ? crypto.randomUUID()
-    : `n_${Math.random().toString(36).slice(2)}`;
 
 /**
  * Create a pipeline-builder store. Unlike the Mate-X original, this carries only
@@ -86,8 +86,10 @@ export function createBuilderStore() {
     dirty: false,
 
     loadDraft(draft) {
+      // PipelineNodeRow.id / PipelineEdgeRow.id are required (`string`) in the
+      // core contract, so loaded drafts always carry ids — no generation needed.
       const nodes: BuilderNode[] = draft.nodes.map((n) => ({
-        id: n.id ?? genId(),
+        id: n.id,
         nodeType: n.nodeType,
         key: n.key,
         label: n.label,
@@ -96,7 +98,7 @@ export function createBuilderStore() {
         positionY: n.positionY,
       }));
       const edges: BuilderEdge[] = draft.edges.map((e) => ({
-        id: e.id ?? genId(),
+        id: e.id,
         fromNodeId: e.fromNodeId,
         toNodeId: e.toNodeId,
         label: e.label,
@@ -163,19 +165,20 @@ export function createBuilderStore() {
     setNodePositions: (positions) => {
       set((s) => {
         const byId = new Map(positions.map((p) => [p.id, p]));
-        let changed = false;
+        // Derive `changed` directly (no closure-mutated flag, which TS
+        // control-flow analysis can't track and ESLint would flag as dead).
+        const changed = s.nodes.some((n) => byId.has(n.id));
+        if (!changed) return {};
         const nodes = s.nodes.map((n) => {
           const p = byId.get(n.id);
-          if (!p) return n;
-          changed = true;
-          return { ...n, positionX: p.x, positionY: p.y };
+          return p ? { ...n, positionX: p.x, positionY: p.y } : n;
         });
-        return changed ? { nodes, dirty: true } : {};
+        return { nodes, dirty: true };
       });
     },
 
     updateMarkerPosition: (which, x, y) => {
-      set((s) =>
+      set(
         which === 'start'
           ? { startMarker: { x, y }, dirty: true }
           : { endMarker: { x, y }, dirty: true }
@@ -199,8 +202,9 @@ export function createBuilderStore() {
       set((s) => ({
         nodes: s.nodes.map((n) => {
           if (n.id !== nodeId) return n;
-          const inputs = { ...n.inputs };
-          delete inputs[paramName];
+          // Immutable key removal: keep everything except the named param,
+          // avoiding `delete` on a dynamically-computed key.
+          const { [paramName]: _removed, ...inputs } = n.inputs;
           return { ...n, inputs };
         }),
         dirty: true,

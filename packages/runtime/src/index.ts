@@ -14,7 +14,9 @@ import {
   type RunStatus,
   type PipelineDraft,
   type RunSummary,
-  type PipelineStateType,
+  type PipelineMeta,
+  type NodeMetaMap,
+  type NodeEvent,
   type PipelineOutputs,
   type CostBundle,
   type CatalogResult,
@@ -32,6 +34,38 @@ import {
   type AutoParamResolver,
   type LangGraphStreamEvent,
 } from '@openpipeline/nodes';
+
+/**
+ * Concrete shape of the LangGraph run state. Core exports `PipelineStateType`
+ * as `any` on purpose — it is `typeof PipelineStateAnnotation.State`, and the
+ * annotation is typed `any` to keep LangGraph's internal generics off the
+ * public `.d.ts` surface. That shield is correct at the package boundary, but
+ * inside the engine we know the exact shape (it mirrors the annotation in
+ * core/state.ts), so we reconstruct it from the concrete building-block types
+ * core does export. This gives us real type-safety for state reads/writes
+ * without weakening anything to `any`.
+ */
+interface PipelineState {
+  meta: PipelineMeta;
+  outputs: PipelineOutputs;
+  nodeMeta: NodeMetaMap;
+  cost: CostBundle;
+  events: NodeEvent[];
+}
+
+/**
+ * Extract the top-level graph state from a LangGraph `on_chain_end` event's
+ * `data.output` (typed `unknown` upstream). Validates the discriminating
+ * `outputs` field is present before treating the payload as a `PipelineState`,
+ * so the narrowing is a real runtime guard rather than a blind cast. Declared
+ * once as the single typed access point into the langgraph `unknown` payload.
+ */
+function readFinalState(output: unknown): PipelineState | undefined {
+  if (output !== null && typeof output === 'object' && 'outputs' in output) {
+    return output as PipelineState;
+  }
+  return undefined;
+}
 
 export interface PipelineEngineOptions {
   store: PipelineStore & StepRecorder;
@@ -235,11 +269,11 @@ export class PipelineEngine {
 
       const compiled = await this.compiler.compile(graph);
 
-      const initialState: PipelineStateType = {
+      const initialState: PipelineState = {
         meta: {
           runId,
           pipelineId: graph.pipeline.id,
-          pipelineName: graph.pipeline.name ?? '',
+          pipelineName: graph.pipeline.name,
           pipelineDescription: graph.pipeline.description ?? '',
           deliveryMode,
           context,
@@ -255,7 +289,7 @@ export class PipelineEngine {
 
       // streamEvents drives live per-node events; we accumulate the final state
       // from the top-level on_chain_end so we still get outputs + cost.
-      let final: PipelineStateType | undefined;
+      let final: PipelineState | undefined;
       const stream = compiled.app.streamEvents(initialState, {
         version: 'v2',
         configurable: { signal: controller.signal },
@@ -269,8 +303,7 @@ export class PipelineEngine {
         if (translated) this.emit(runId, translated);
         // Capture the top-level graph output (no langgraph_node metadata).
         if (evt.event === 'on_chain_end' && !evt.metadata?.langgraph_node) {
-          const out = (evt.data as { output?: PipelineStateType })?.output;
-          if (out && typeof out === 'object' && 'outputs' in out) final = out;
+          final = readFinalState(evt.data?.output) ?? final;
         }
       }
 

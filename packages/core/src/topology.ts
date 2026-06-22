@@ -42,8 +42,7 @@ export function computeAncestors(
   // Reverse BFS to collect ancestors, then order them forward-topologically.
   const ancestors = new Set<string>();
   const queue = [...(nodeMap.get(nodeId)?.predecessors ?? [])];
-  while (queue.length > 0) {
-    const id = queue.shift()!;
+  for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
     if (ancestors.has(id)) continue;
     ancestors.add(id);
     for (const p of nodeMap.get(id)?.predecessors ?? []) {
@@ -62,8 +61,7 @@ export function computeAncestors(
   const ready: string[] = [];
   for (const [id, d] of inDegree) if (d === 0) ready.push(id);
   const ordered: string[] = [];
-  while (ready.length > 0) {
-    const id = ready.shift()!;
+  for (let id = ready.shift(); id !== undefined; id = ready.shift()) {
     ordered.push(id);
     for (const succ of nodeMap.get(id)?.successors ?? []) {
       if (!ancestors.has(succ)) continue;

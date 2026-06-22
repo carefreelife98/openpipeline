@@ -8,7 +8,7 @@ import {
 } from '@openpipeline/core';
 
 import { makeNodeRunner, type NodeRunnerDeps } from './node-runner.js';
-import { NodeSpecRegistry, type NodeResolveContext } from './registry.js';
+import type { NodeSpecRegistry, NodeResolveContext } from './registry.js';
 
 /** Deps the caller supplies; `nodeMap` is filled internally by the compiler. */
 export type CompilerDeps = Omit<NodeRunnerDeps, 'nodeMap'> & {
@@ -62,14 +62,15 @@ export class PipelineCompiler {
     // MCP-node graphs bypass the cache: an MCP spec depends on user/provider
     // state, so a cache hit could serve a stale spec.
     const hasMcpNode = graph.nodes.some((n) => n.key.startsWith('mcp:'));
-    const cacheKey = `${graph.pipeline.id}:${new Date(graph.pipeline.updatedAt).getTime()}`;
+    const cacheKey = `${graph.pipeline.id}:${String(new Date(graph.pipeline.updatedAt).getTime())}`;
 
     if (!hasMcpNode) {
       const idx = this.cache.findIndex((e) => e.cacheKey === cacheKey);
-      if (idx !== -1) {
-        const [entry] = this.cache.splice(idx, 1);
-        this.cache.unshift(entry!);
-        return entry!.compiled;
+      const entry = idx === -1 ? undefined : this.cache[idx];
+      if (entry) {
+        this.cache.splice(idx, 1);
+        this.cache.unshift(entry);
+        return entry.compiled;
       }
     }
 
@@ -123,7 +124,10 @@ export class PipelineCompiler {
     };
 
     for (const wfNode of graph.nodes) {
-      const compiledNode = nodeMap.get(wfNode.id)!;
+      const compiledNode = nodeMap.get(wfNode.id);
+      if (!compiledNode) {
+        throw new Error(`[PipelineCompiler] missing resolved node for "${wfNode.id}"`);
+      }
       const runner = makeNodeRunner(wfNode, compiledNode.spec, runnerDeps);
       // Fan-in barrier: in-degree >= 2 nodes are deferred so they run once, after
       // all reachable parents complete (asymmetric fan-in would otherwise double-run).
@@ -140,10 +144,10 @@ export class PipelineCompiler {
     for (const wfEdge of graph.edges) {
       const fromNode = nodeMap.get(wfEdge.fromNodeId);
       if (fromNode?.node.nodeType === 'IF') {
-        ifBranches[wfEdge.fromNodeId] ??= {};
+        const branches = (ifBranches[wfEdge.fromNodeId] ??= {});
         const label = wfEdge.label;
         if (label === 'true' || label === 'false') {
-          ifBranches[wfEdge.fromNodeId]![label] = wfEdge.toNodeId;
+          branches[label] = wfEdge.toNodeId;
         }
       } else {
         stateGraph.addEdge(wfEdge.fromNodeId as never, wfEdge.toNodeId as never);
@@ -192,7 +196,7 @@ export class PipelineCompiler {
       app: app as unknown as CompiledPipeline['app'],
       entryNodeIds,
       exitNodeIds,
-      nodeMap: nodeMap,
+      nodeMap,
     };
 
     if (!hasMcpNode) {

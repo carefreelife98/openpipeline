@@ -30,12 +30,14 @@ export function translateEvent(
       const nodeId = event.metadata?.langgraph_node;
       if (!nodeId || (knownNodeIds && !knownNodeIds.has(nodeId))) return null;
       const partial = (
-        event.data as {
-          output?: {
-            outputs?: Record<string, unknown>;
-            nodeMeta?: Record<string, { startedAt?: string; finishedAt?: string }>;
-          };
-        }
+        event.data as
+          | {
+              output?: {
+                outputs?: Record<string, unknown>;
+                nodeMeta?: Record<string, { startedAt?: string; finishedAt?: string }>;
+              };
+            }
+          | undefined
       )?.output;
       const output = partial?.outputs?.[nodeId];
       const meta = partial?.nodeMeta?.[nodeId];
@@ -48,7 +50,7 @@ export function translateEvent(
       };
     }
     case 'on_chat_model_stream': {
-      const chunk = (event.data as { chunk?: { content?: string } })?.chunk;
+      const chunk = (event.data as { chunk?: { content?: string } } | undefined)?.chunk;
       const text = typeof chunk?.content === 'string' ? chunk.content : '';
       if (!text) return null;
       return { kind: 'LLM_CHUNK', text };

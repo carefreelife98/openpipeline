@@ -1,6 +1,6 @@
 import type { CostBundle } from './cost.js';
 import type { RunDeliveryMode, RunStatus, RunStepStatus } from './enums.js';
-import type { PipelineWithGraph, PipelineRow, PipelineNodeRow, PipelineEdgeRow } from './graph.js';
+import type { PipelineWithGraph, PipelineNodeRow, PipelineEdgeRow } from './graph.js';
 import type { NodeSpec, Logger } from './node-spec.js';
 import type { PipelineError } from './state.js';
 

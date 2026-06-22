@@ -94,7 +94,9 @@ export function createEnvCatalogLoader(options: EnvCatalogLoaderOptions): Catalo
           invoke: async (input: unknown) => {
             // Surface real validation errors instead of the adapter's generic message.
             (tool as { verboseParsingErrors?: boolean }).verboseParsingErrors = true;
-            const raw = await tool.invoke(input as never);
+            // LangChain's `invoke` is typed to return `any` (ToolOutputType = any);
+            // pin it to `unknown` at this boundary so callers can't treat it unsafely.
+            const raw: unknown = await tool.invoke(input);
             return unwrapToolResult(raw);
           },
         }));
@@ -112,7 +114,7 @@ export function createEnvCatalogLoader(options: EnvCatalogLoaderOptions): Catalo
         cleanup: async () => {
           await Promise.all(
             clients.map((c) =>
-              (c as { close?: () => Promise<void> }).close?.().catch((err) => {
+              c.close().catch((err: unknown) => {
                 logger.warn('[mcp] client cleanup failed', { err });
               })
             )
