@@ -4,14 +4,14 @@
   "description": "Execution kernel (compiler, node-runner, registry, binding resolver) and built-in IF/LLM nodes for OpenPipeline.",
   "license": "MIT",
   "author": "carefreelife98",
-  "homepage": "https://github.com/carefreelife98/openworkflow/tree/main/packages/nodes#readme",
+  "homepage": "https://github.com/carefreelife98/openpipeline/tree/main/packages/nodes#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/carefreelife98/openworkflow.git",
+    "url": "git+https://github.com/carefreelife98/openpipeline.git",
     "directory": "packages/nodes"
   },
   "bugs": {
-    "url": "https://github.com/carefreelife98/openworkflow/issues"
+    "url": "https://github.com/carefreelife98/openpipeline/issues"
   },
   "keywords": [
     "pipeline",

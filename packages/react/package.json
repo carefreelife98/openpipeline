@@ -4,14 +4,14 @@
   "description": "Visual DAG builder for OpenPipeline as a controlled React component library (ReactFlow + Zustand).",
   "license": "MIT",
   "author": "carefreelife98",
-  "homepage": "https://github.com/carefreelife98/openworkflow/tree/main/packages/react#readme",
+  "homepage": "https://github.com/carefreelife98/openpipeline/tree/main/packages/react#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/carefreelife98/openworkflow.git",
+    "url": "git+https://github.com/carefreelife98/openpipeline.git",
     "directory": "packages/react"
   },
   "bugs": {
-    "url": "https://github.com/carefreelife98/openworkflow/issues"
+    "url": "https://github.com/carefreelife98/openpipeline/issues"
   },
   "keywords": [
     "pipeline",

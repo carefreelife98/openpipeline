@@ -4,14 +4,14 @@
   "description": "Optional MCP integration for OpenPipeline: JSON-Schema→Zod converter, MCP client factory, env catalog loader, and mcp:* node resolver.",
   "license": "MIT",
   "author": "carefreelife98",
-  "homepage": "https://github.com/carefreelife98/openworkflow/tree/main/packages/mcp#readme",
+  "homepage": "https://github.com/carefreelife98/openpipeline/tree/main/packages/mcp#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/carefreelife98/openworkflow.git",
+    "url": "git+https://github.com/carefreelife98/openpipeline.git",
     "directory": "packages/mcp"
   },
   "bugs": {
-    "url": "https://github.com/carefreelife98/openworkflow/issues"
+    "url": "https://github.com/carefreelife98/openpipeline/issues"
   },
   "keywords": [
     "pipeline",

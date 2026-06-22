@@ -2,7 +2,7 @@
 
 Optional MCP integration for OpenPipeline: JSON-Schema→Zod converter, MCP client factory, env catalog loader, and mcp:* node resolver.
 
-Part of [OpenPipeline](https://github.com/carefreelife98/openworkflow) — a framework-agnostic engine for compiling and running MCP-tool pipelines as LangGraph DAGs.
+Part of [OpenPipeline](https://github.com/carefreelife98/openpipeline) — a framework-agnostic engine for compiling and running MCP-tool pipelines as LangGraph DAGs.
 
 ## Install
 
@@ -18,7 +18,7 @@ Optional MCP integration: a JSON-Schema→Zod converter, an MCP client factory, 
 import { createEnvCatalogLoader, McpNodeResolverImpl } from '@openpipeline/mcp';
 ```
 
-See the [root README](https://github.com/carefreelife98/openworkflow#readme) for the full quickstart and the playground.
+See the [root README](https://github.com/carefreelife98/openpipeline#readme) for the full quickstart and the playground.
 
 ## License
 

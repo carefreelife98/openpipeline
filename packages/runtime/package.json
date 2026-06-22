@@ -4,14 +4,14 @@
   "description": "PipelineEngine orchestrator for OpenPipeline — drives a run end to end over the kernel.",
   "license": "MIT",
   "author": "carefreelife98",
-  "homepage": "https://github.com/carefreelife98/openworkflow/tree/main/packages/runtime#readme",
+  "homepage": "https://github.com/carefreelife98/openpipeline/tree/main/packages/runtime#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/carefreelife98/openworkflow.git",
+    "url": "git+https://github.com/carefreelife98/openpipeline.git",
     "directory": "packages/runtime"
   },
   "bugs": {
-    "url": "https://github.com/carefreelife98/openworkflow/issues"
+    "url": "https://github.com/carefreelife98/openpipeline/issues"
   },
   "keywords": [
     "pipeline",

@@ -4,14 +4,14 @@
   "description": "In-memory PipelineStore + StepRecorder reference implementation for OpenPipeline.",
   "license": "MIT",
   "author": "carefreelife98",
-  "homepage": "https://github.com/carefreelife98/openworkflow/tree/main/packages/store-memory#readme",
+  "homepage": "https://github.com/carefreelife98/openpipeline/tree/main/packages/store-memory#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/carefreelife98/openworkflow.git",
+    "url": "git+https://github.com/carefreelife98/openpipeline.git",
     "directory": "packages/store-memory"
   },
   "bugs": {
-    "url": "https://github.com/carefreelife98/openworkflow/issues"
+    "url": "https://github.com/carefreelife98/openpipeline/issues"
   },
   "keywords": [
     "pipeline",
