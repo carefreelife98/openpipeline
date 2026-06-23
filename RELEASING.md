@@ -19,9 +19,9 @@ consumer's install with `EUNSUPPORTEDPROTOCOL`.
 ## Procedure
 
 ```bash
-# 1. Green baseline
+# 1. Green baseline (build BEFORE typecheck — internal types come from dist/)
 pnpm install --frozen-lockfile
-pnpm typecheck && pnpm build && pnpm example
+pnpm build && pnpm typecheck && pnpm lint && pnpm format:check && pnpm test:ci && pnpm example
 
 # 2. Bump all 8 packages to the new version (lockstep), e.g. 0.1.1
 #    (edit each packages/*/package.json "version", or use a script)

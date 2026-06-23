@@ -14,7 +14,7 @@ everything else is an interface you can swap.
 > Status: early (`0.1.x`). The headless engine, MCP integration, in-memory and
 > Postgres persistence, an HTTP/SSE server, and a visual React builder are all
 > functional end-to-end (see the playground). Packages are **ESM-only** and
-> require **Node 20+**.
+> require **Node 22.12+**.
 
 ## Install
 
