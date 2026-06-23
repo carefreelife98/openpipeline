@@ -71,15 +71,22 @@ export class PreObtainedTokenAuthProvider implements OAuthClientProvider {
 }
 
 /** Create a MultiServerMCPClient for a single server config. */
-export function createClient(config: McpServerConfig, accessToken?: string): MultiServerMCPClient {
+export function createClient(
+  config: McpServerConfig,
+  authOrProvider?: string | OAuthClientProvider
+): MultiServerMCPClient {
   let serverConfig;
   if (config.transportType === 'http') {
     if (config.url == null) {
       throw new Error(`[mcp] server "${config.key}" uses http transport but has no "url"`);
     }
+    const authProvider =
+      typeof authOrProvider === 'string'
+        ? new PreObtainedTokenAuthProvider(authOrProvider)
+        : authOrProvider;
     serverConfig = {
       url: config.url,
-      ...(accessToken ? { authProvider: new PreObtainedTokenAuthProvider(accessToken) } : {}),
+      ...(authProvider ? { authProvider } : {}),
     };
   } else {
     if (config.command == null) {
