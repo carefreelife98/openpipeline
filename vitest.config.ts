@@ -7,13 +7,15 @@ import { defineConfig } from 'vitest/config';
 // `pnpm build` first — CI does), so it exercises the real published artifacts.
 export default defineConfig({
   test: {
-    include: ['packages/**/test/**/*.test.ts'],
+    include: ['packages/**/test/**/*.test.{ts,tsx}'],
+    // Node by default; the React package's tests opt into jsdom per-file with a
+    // `// @vitest-environment jsdom` docblock (only those need a DOM).
     environment: 'node',
     coverage: {
       provider: 'v8',
       reportsDirectory: './coverage',
       reporter: ['text', 'html'],
-      include: ['packages/*/src/**/*.ts'],
+      include: ['packages/*/src/**/*.{ts,tsx}'],
       exclude: ['packages/*/src/generated/**'],
     },
   },
