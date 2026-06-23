@@ -10,6 +10,14 @@ docs/
 packages/store-prisma/src/generated/
 /package/
 
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+pnpm-debug.log*
+.env*.local
+
 # Private session-context docs (not for public OSS repo)
 /CLAUDE.md
 /PRODUCT.md
