@@ -1,3 +1,5 @@
+import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
+
 import type { McpServerConfig } from './types.js';
 
 export interface PolicyContext {
@@ -17,11 +19,15 @@ export interface PolicyTool {
  *
  * - filterProviders: which servers are visible (admin curation / company activation)
  * - filterTools: which tools within a provider are allowed (the company allowlist)
- * - resolveToken: per-user OAuth token resolution
+ * - resolveToken: per-user OAuth token resolution (static bearer token)
+ * - resolveAuthProvider: per-server live OAuth provider (full dynamic flow via SDK)
  *
  * The single-tenant default (no policy) returns everything and uses the token
  * from each server config — i.e. "personal direct use". Multi-tenant hosts
- * implement these three methods; the engine never sees companyId or scope.
+ * implement these methods; the engine never sees companyId or scope.
+ *
+ * Auth precedence: resolveAuthProvider > resolveToken > server.accessToken.
+ * When resolveAuthProvider returns a provider, resolveToken is NOT consulted.
  */
 export interface CatalogPolicy {
   filterProviders?(
@@ -37,4 +43,14 @@ export interface CatalogPolicy {
     server: McpServerConfig,
     ctx: PolicyContext
   ): string | undefined | Promise<string | undefined>;
+  /**
+   * Per-server live OAuth provider. When present, the SDK transport drives the
+   * full flow (401 → refresh → retry) via the provider's tokens()/saveTokens().
+   * Takes precedence over resolveToken. Return undefined to fall through to
+   * resolveToken / server.accessToken.
+   */
+  resolveAuthProvider?(
+    server: McpServerConfig,
+    ctx: PolicyContext
+  ): OAuthClientProvider | undefined | Promise<OAuthClientProvider | undefined>;
 }

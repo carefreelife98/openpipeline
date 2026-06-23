@@ -206,3 +206,31 @@ describe('createEnvCatalogLoader — cleanup', () => {
     await expect(result.cleanup()).resolves.toBeUndefined();
   });
 });
+
+describe('createEnvCatalogLoader — CatalogPolicy.resolveAuthProvider precedence', () => {
+  it('prefers resolveAuthProvider over resolveToken', async () => {
+    const resolveToken = vi.fn().mockResolvedValue('tok');
+    // A minimal OAuthClientProvider-shaped object is sufficient for the loader —
+    // it passes it straight through to createClient without inspecting structure.
+    const fakeProvider = { redirectUrl: 'https://example.test/cb', clientMetadata: {} };
+    const resolveAuthProvider = vi.fn().mockResolvedValue(fakeProvider);
+    const policy: CatalogPolicy = { resolveToken, resolveAuthProvider };
+    const loader = createEnvCatalogLoader({ servers: [HTTP_SERVER], policy });
+    const result = await loader.load({});
+    await result.cleanup();
+    expect(resolveAuthProvider).toHaveBeenCalledWith(HTTP_SERVER, expect.anything());
+    expect(resolveToken).not.toHaveBeenCalled();
+    // The provider object (not a raw token string) must have been forwarded to createClient.
+    expect(createClient).toHaveBeenCalledWith(HTTP_SERVER, fakeProvider);
+  });
+
+  it('falls back to resolveToken when resolveAuthProvider is absent', async () => {
+    const resolveToken = vi.fn().mockResolvedValue('per-user-tok');
+    const policy: CatalogPolicy = { resolveToken };
+    const loader = createEnvCatalogLoader({ servers: [HTTP_SERVER], policy });
+    const result = await loader.load({});
+    await result.cleanup();
+    expect(resolveToken).toHaveBeenCalledWith(HTTP_SERVER, expect.anything());
+    expect(createClient).toHaveBeenCalledWith(HTTP_SERVER, 'per-user-tok');
+  });
+});
