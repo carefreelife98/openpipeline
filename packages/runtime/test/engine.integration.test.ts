@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
-import { z } from 'zod';
-import { PipelineEngine } from '@openpipeline/runtime';
+import { defineNode } from '@openpipeline/core';
 import { createIfNodeSpec, createLlmInvokeNodeSpec } from '@openpipeline/nodes';
 import { MemoryStore } from '@openpipeline/store-memory';
-import { defineNode } from '@openpipeline/core';
+import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
+
+import { PipelineEngine } from '@openpipeline/runtime';
 
 // End-to-end integration test against the BUILT packages (run `pnpm build`
 // first — CI builds before test). Exercises save -> run -> done through the
@@ -11,17 +12,20 @@ import { defineNode } from '@openpipeline/core';
 
 const stubLlmFactory = {
   createModel: () => ({
-    invoke: async () => ({
-      content: 'stub reply',
-      usage_metadata: { input_tokens: 4, output_tokens: 2, total_tokens: 6 },
-    }),
+    invoke: () =>
+      Promise.resolve({
+        content: 'stub reply',
+        usage_metadata: { input_tokens: 4, output_tokens: 2, total_tokens: 6 },
+      }),
   }),
 };
 
 function makeEngine() {
   const engine = new PipelineEngine({ store: new MemoryStore(), llmFactory: stubLlmFactory });
   engine.registerNode(createIfNodeSpec());
-  engine.registerNode(createLlmInvokeNodeSpec({ models: ['stub-model'], defaultModel: 'stub-model' }));
+  engine.registerNode(
+    createLlmInvokeNodeSpec({ models: ['stub-model'], defaultModel: 'stub-model' })
+  );
   engine.registerNode(
     defineNode({
       key: 'tool.uppercase',
@@ -30,12 +34,16 @@ function makeEngine() {
       description: 'Uppercases its input text.',
       icon: 'type',
       inputSchema: z.object({ text: z.string() }),
-      outputSchema: z.object({ kind: z.literal('tool.uppercase'), out: z.string(), nonEmpty: z.boolean() }),
-      handler: async ({ text }) => {
+      outputSchema: z.object({
+        kind: z.literal('tool.uppercase'),
+        out: z.string(),
+        nonEmpty: z.boolean(),
+      }),
+      handler: ({ text }) => {
         const out = text.toUpperCase();
-        return { kind: 'tool.uppercase' as const, out, nonEmpty: out.length > 0 };
+        return Promise.resolve({ kind: 'tool.uppercase' as const, out, nonEmpty: out.length > 0 });
       },
-    }),
+    })
   );
   return engine;
 }
@@ -147,8 +155,20 @@ describe('PipelineEngine end-to-end', () => {
     const pipelineId = await engine.save({
       name: 'cyclic',
       nodes: [
-        { id: 'a', nodeType: 'TOOL', key: 'tool.uppercase', label: 'A', inputs: { text: { kind: 'literal', value: 'x' } } },
-        { id: 'b', nodeType: 'TOOL', key: 'tool.uppercase', label: 'B', inputs: { text: { kind: 'literal', value: 'y' } } },
+        {
+          id: 'a',
+          nodeType: 'TOOL',
+          key: 'tool.uppercase',
+          label: 'A',
+          inputs: { text: { kind: 'literal', value: 'x' } },
+        },
+        {
+          id: 'b',
+          nodeType: 'TOOL',
+          key: 'tool.uppercase',
+          label: 'B',
+          inputs: { text: { kind: 'literal', value: 'y' } },
+        },
       ],
       edges: [
         { id: 'e1', fromNodeId: 'a', toNodeId: 'b' },

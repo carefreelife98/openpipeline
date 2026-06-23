@@ -24,11 +24,17 @@ export interface PolicyTool {
  * implement these three methods; the engine never sees companyId or scope.
  */
 export interface CatalogPolicy {
-  filterProviders?(servers: readonly McpServerConfig[], ctx: PolicyContext): McpServerConfig[] | Promise<McpServerConfig[]>;
+  filterProviders?(
+    servers: readonly McpServerConfig[],
+    ctx: PolicyContext
+  ): McpServerConfig[] | Promise<McpServerConfig[]>;
   filterTools?(
     tools: readonly PolicyTool[],
     server: McpServerConfig,
-    ctx: PolicyContext,
+    ctx: PolicyContext
   ): PolicyTool[] | Promise<PolicyTool[]>;
-  resolveToken?(server: McpServerConfig, ctx: PolicyContext): string | undefined | Promise<string | undefined>;
+  resolveToken?(
+    server: McpServerConfig,
+    ctx: PolicyContext
+  ): string | undefined | Promise<string | undefined>;
 }

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import '@xyflow/react/dist/style.css';
-import { ReactFlowProvider } from '@xyflow/react';
+import type { PipelineDraft } from '@openpipeline/core';
 import { BuilderCanvas, createBuilderStore } from '@openpipeline/react';
 import type { NodeRunStatus, NodeSpecDescriptor } from '@openpipeline/react';
-import type { PipelineDraft } from '@openpipeline/core';
+import { ReactFlowProvider } from '@xyflow/react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+
+import '@xyflow/react/dist/style.css';
 
 /**
  * The playground IS the reference auth/router wrapper a consumer copies. It owns:
@@ -67,7 +68,8 @@ export function App(): React.JSX.Element {
     setNodeRunStatus({});
     pushLog('run started');
     const res = await fetch(`/pipeline/runs/x/stream?pipelineId=${pipelineId}`);
-    const reader = res.body!.getReader();
+    if (!res.body) throw new Error('SSE response has no body stream');
+    const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
     for (;;) {
@@ -84,14 +86,15 @@ export function App(): React.JSX.Element {
           nodeId?: string;
           status?: string;
         };
-        if (event.kind === 'NODE_START' && event.nodeId) {
-          setNodeRunStatus((s) => ({ ...s, [event.nodeId!]: 'RUNNING' }));
-        } else if (event.kind === 'NODE_END' && event.nodeId) {
-          setNodeRunStatus((s) => ({ ...s, [event.nodeId!]: 'SUCCESS' }));
-        } else if (event.kind === 'NODE_FAILED' && event.nodeId) {
-          setNodeRunStatus((s) => ({ ...s, [event.nodeId!]: 'FAILED' }));
+        const nodeId = event.nodeId;
+        if (event.kind === 'NODE_START' && nodeId) {
+          setNodeRunStatus((s) => ({ ...s, [nodeId]: 'RUNNING' }));
+        } else if (event.kind === 'NODE_END' && nodeId) {
+          setNodeRunStatus((s) => ({ ...s, [nodeId]: 'SUCCESS' }));
+        } else if (event.kind === 'NODE_FAILED' && nodeId) {
+          setNodeRunStatus((s) => ({ ...s, [nodeId]: 'FAILED' }));
         } else if (event.kind === 'RUN_COMPLETE') {
-          pushLog(`run complete: ${event.status}`);
+          pushLog(`run complete: ${event.status ?? 'unknown'}`);
         }
       }
     }
@@ -118,7 +121,15 @@ export function App(): React.JSX.Element {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', height: '100%' }}>
       {/* Palette + controls */}
-      <aside style={{ borderRight: '1px solid #e2e8f0', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <aside
+        style={{
+          borderRight: '1px solid #e2e8f0',
+          padding: 12,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+        }}
+      >
         <strong style={{ fontSize: 14 }}>OpenPipeline</strong>
         <span style={{ fontSize: 11, color: '#64748b' }}>Playground</span>
         <hr style={{ width: '100%', border: 'none', borderTop: '1px solid #e2e8f0' }} />
@@ -126,15 +137,38 @@ export function App(): React.JSX.Element {
         {catalog.map((spec) => (
           <button
             key={spec.key}
-            onClick={() => addNode(spec)}
-            style={{ textAlign: 'left', padding: '6px 8px', borderRadius: 6, border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer', fontSize: 12 }}
+            onClick={() => {
+              addNode(spec);
+            }}
+            style={{
+              textAlign: 'left',
+              padding: '6px 8px',
+              borderRadius: 6,
+              border: '1px solid #e2e8f0',
+              background: '#fff',
+              cursor: 'pointer',
+              fontSize: 12,
+            }}
           >
             + {spec.displayName}
           </button>
         ))}
         <hr style={{ width: '100%', border: 'none', borderTop: '1px solid #e2e8f0' }} />
-        <button onClick={save} style={btn('#6366f1')}>Save{dirty ? ' *' : ''}</button>
-        <button onClick={run} disabled={running} style={btn(running ? '#94a3b8' : '#10b981')}>
+        <button
+          onClick={() => {
+            void save();
+          }}
+          style={btn('#6366f1')}
+        >
+          Save{dirty ? ' *' : ''}
+        </button>
+        <button
+          onClick={() => {
+            void run();
+          }}
+          disabled={running}
+          style={btn(running ? '#94a3b8' : '#10b981')}
+        >
           {running ? 'Running…' : 'Run'}
         </button>
         <div style={{ marginTop: 'auto', fontSize: 11, color: '#64748b' }}>

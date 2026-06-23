@@ -7,7 +7,7 @@ import type { PipelineNodeRow, PipelineEdgeRow, TopologyAnalysis, CompiledNode }
  */
 export function analyzeTopology(
   nodes: readonly PipelineNodeRow[],
-  edges: readonly PipelineEdgeRow[],
+  edges: readonly PipelineEdgeRow[]
 ): TopologyAnalysis {
   const predecessors = new Map<string, string[]>();
   const successors = new Map<string, string[]>();
@@ -26,8 +26,8 @@ export function analyzeTopology(
   return {
     entryNodes,
     exitNodes,
-    predecessorsByNode: predecessors as ReadonlyMap<string, readonly string[]>,
-    successorsByNode: successors as ReadonlyMap<string, readonly string[]>,
+    predecessorsByNode: predecessors,
+    successorsByNode: successors,
   };
 }
 
@@ -35,12 +35,14 @@ export function analyzeTopology(
  * Forward-topological ancestor ids of a node (those that can reach it), in data-
  * flow order. Used to scope predecessor outputs handed to the resolver.
  */
-export function computeAncestors(nodeId: string, nodeMap: ReadonlyMap<string, CompiledNode>): string[] {
+export function computeAncestors(
+  nodeId: string,
+  nodeMap: ReadonlyMap<string, CompiledNode>
+): string[] {
   // Reverse BFS to collect ancestors, then order them forward-topologically.
   const ancestors = new Set<string>();
   const queue = [...(nodeMap.get(nodeId)?.predecessors ?? [])];
-  while (queue.length > 0) {
-    const id = queue.shift()!;
+  for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
     if (ancestors.has(id)) continue;
     ancestors.add(id);
     for (const p of nodeMap.get(id)?.predecessors ?? []) {
@@ -59,8 +61,7 @@ export function computeAncestors(nodeId: string, nodeMap: ReadonlyMap<string, Co
   const ready: string[] = [];
   for (const [id, d] of inDegree) if (d === 0) ready.push(id);
   const ordered: string[] = [];
-  while (ready.length > 0) {
-    const id = ready.shift()!;
+  for (let id = ready.shift(); id !== undefined; id = ready.shift()) {
     ordered.push(id);
     for (const succ of nodeMap.get(id)?.successors ?? []) {
       if (!ancestors.has(succ)) continue;

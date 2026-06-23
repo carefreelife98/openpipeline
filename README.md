@@ -50,10 +50,18 @@ engine.registerNode(
     inputSchema: z.object({ text: z.string() }),
     outputSchema: z.object({ kind: z.literal('tool.uppercase'), out: z.string() }),
     handler: async ({ text }) => ({ kind: 'tool.uppercase', out: text.toUpperCase() }),
-  }),
+  })
 );
 
-const id = await engine.save({ name: 'demo', nodes: [/* ... */], edges: [/* ... */] });
+const id = await engine.save({
+  name: 'demo',
+  nodes: [
+    /* ... */
+  ],
+  edges: [
+    /* ... */
+  ],
+});
 const { runId, done } = await engine.run({ pipelineId: id });
 const result = await done; // { status: 'SUCCESS', outputs, cost }
 ```
@@ -81,16 +89,16 @@ pnpm install && pnpm build && pnpm example
 
 ## Packages
 
-| Package | Responsibility |
-| --- | --- |
-| [`@openpipeline/core`](./packages/core) | Types + interface contracts (`PipelineStore`, `StepRecorder`, `LlmFactory`, `CatalogLoader`, `Logger`). Zero framework deps. |
-| [`@openpipeline/nodes`](./packages/nodes) | Execution kernel (compiler, node-runner, registry, binding resolver) + built-in `IF` / `LLM` nodes. |
-| [`@openpipeline/runtime`](./packages/runtime) | `PipelineEngine` — orchestrates a run end to end over the kernel. |
-| [`@openpipeline/store-memory`](./packages/store-memory) | In-memory `PipelineStore` + `StepRecorder` reference implementation. |
-| [`@openpipeline/mcp`](./packages/mcp) | Optional MCP integration: JSON-Schema→Zod converter, client factory, env catalog loader, `mcp:*` node resolver, and the `CatalogPolicy` hook. |
-| [`@openpipeline/store-prisma`](./packages/store-prisma) | Postgres `PipelineStore` + `StepRecorder` adapter (Prisma). Ships a clean 5-model schema with no multi-tenancy. |
-| [`@openpipeline/server`](./packages/server) | Transport-agnostic HTTP + SSE handlers, plus a tiny Node `http` adapter. Streams live run events. |
-| [`@openpipeline/react`](./packages/react) | The visual DAG builder as a controlled React component library (`<BuilderCanvas/>` + a Zustand store). No Next.js, no auth — you own data loading and persistence. |
+| Package                                                 | Responsibility                                                                                                                                                     |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`@openpipeline/core`](./packages/core)                 | Types + interface contracts (`PipelineStore`, `StepRecorder`, `LlmFactory`, `CatalogLoader`, `Logger`). Zero framework deps.                                       |
+| [`@openpipeline/nodes`](./packages/nodes)               | Execution kernel (compiler, node-runner, registry, binding resolver) + built-in `IF` / `LLM` nodes.                                                                |
+| [`@openpipeline/runtime`](./packages/runtime)           | `PipelineEngine` — orchestrates a run end to end over the kernel.                                                                                                  |
+| [`@openpipeline/store-memory`](./packages/store-memory) | In-memory `PipelineStore` + `StepRecorder` reference implementation.                                                                                               |
+| [`@openpipeline/mcp`](./packages/mcp)                   | Optional MCP integration: JSON-Schema→Zod converter, client factory, env catalog loader, `mcp:*` node resolver, and the `CatalogPolicy` hook.                      |
+| [`@openpipeline/store-prisma`](./packages/store-prisma) | Postgres `PipelineStore` + `StepRecorder` adapter (Prisma). Ships a clean 5-model schema with no multi-tenancy.                                                    |
+| [`@openpipeline/server`](./packages/server)             | Transport-agnostic HTTP + SSE handlers, plus a tiny Node `http` adapter. Streams live run events.                                                                  |
+| [`@openpipeline/react`](./packages/react)               | The visual DAG builder as a controlled React component library (`<BuilderCanvas/>` + a Zustand store). No Next.js, no auth — you own data loading and persistence. |
 
 ## Bring your own
 
@@ -116,12 +124,18 @@ tree (only `@langchain/*` + `zod`).
 import { createEnvCatalogLoader, McpNodeResolverImpl } from '@openpipeline/mcp';
 
 const engine = new PipelineEngine({
-  store, llmFactory,
+  store,
+  llmFactory,
   catalogLoader: createEnvCatalogLoader({
     servers: [
-      { key: 'github', transportType: 'stdio', command: 'npx',
+      {
+        key: 'github',
+        transportType: 'stdio',
+        command: 'npx',
         args: ['-y', '@modelcontextprotocol/server-github'],
-        authType: 'none', env: { GITHUB_TOKEN: process.env.GH_TOKEN! } },
+        authType: 'none',
+        env: { GITHUB_TOKEN: process.env.GH_TOKEN! },
+      },
     ],
   }),
   mcpNodeResolver: new McpNodeResolverImpl(),
@@ -185,7 +199,7 @@ store.getState().loadDraft(myPipelineDraft); // from your GET endpoint
 
 <ReactFlowProvider>
   <BuilderCanvas store={store} nodeRunStatus={liveStatus} />
-</ReactFlowProvider>
+</ReactFlowProvider>;
 // persist with store.getState().toDraft() -> your POST endpoint
 ```
 

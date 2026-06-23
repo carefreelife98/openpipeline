@@ -8,20 +8,24 @@
  * The IF condition reads the custom node's output via a `state` binding. Both
  * branches point at a real node (an IF requires a true AND a false target).
  */
-import { PipelineEngine } from '@openpipeline/runtime';
-import { createIfNodeSpec, createLlmInvokeNodeSpec } from '@openpipeline/nodes';
-import { MemoryStore } from '@openpipeline/store-memory';
 import { defineNode } from '@openpipeline/core';
+import { createIfNodeSpec, createLlmInvokeNodeSpec } from '@openpipeline/nodes';
+import { PipelineEngine } from '@openpipeline/runtime';
+import { MemoryStore } from '@openpipeline/store-memory';
 import { z } from 'zod';
 
 // A trivial LlmFactory stub so llm.invoke works without API keys.
 // In a real app this returns a LangChain BaseChatModel.
 const stubLlmFactory = {
   createModel: () => ({
-    invoke: async (messages: unknown[]) => ({
-      content: `(stub echo) ${JSON.stringify(messages).slice(0, 80)}`,
-      usage_metadata: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
-    }),
+    // No real network call here, so we return a resolved Promise rather than
+    // marking the function `async` — it still satisfies the Promise-returning
+    // `.invoke()` contract that the LLM node awaits.
+    invoke: (messages: unknown[]) =>
+      Promise.resolve({
+        content: `(stub echo) ${JSON.stringify(messages).slice(0, 80)}`,
+        usage_metadata: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+      }),
   }),
 };
 
@@ -33,7 +37,9 @@ const engine = new PipelineEngine({
 
 // Register built-ins + one custom node.
 engine.registerNode(createIfNodeSpec());
-engine.registerNode(createLlmInvokeNodeSpec({ models: ['stub-model'], defaultModel: 'stub-model' }));
+engine.registerNode(
+  createLlmInvokeNodeSpec({ models: ['stub-model'], defaultModel: 'stub-model' })
+);
 engine.registerNode(
   defineNode({
     key: 'tool.uppercase',
@@ -42,12 +48,18 @@ engine.registerNode(
     description: 'Uppercases its input text.',
     icon: 'type',
     inputSchema: z.object({ text: z.string() }),
-    outputSchema: z.object({ kind: z.literal('tool.uppercase'), out: z.string(), nonEmpty: z.boolean() }),
-    handler: async ({ text }) => {
+    outputSchema: z.object({
+      kind: z.literal('tool.uppercase'),
+      out: z.string(),
+      nonEmpty: z.boolean(),
+    }),
+    // Synchronous work, but the handler contract is Promise-returning, so we
+    // resolve immediately instead of using a redundant `async`.
+    handler: ({ text }) => {
       const out = text.toUpperCase();
-      return { kind: 'tool.uppercase' as const, out, nonEmpty: out.length > 0 };
+      return Promise.resolve({ kind: 'tool.uppercase' as const, out, nonEmpty: out.length > 0 });
     },
-  }),
+  })
 );
 
 const pipelineId = await engine.save({

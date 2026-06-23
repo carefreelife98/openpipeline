@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+
 import { validateStatePath } from '../src/path-validator.js';
 
 describe('validateStatePath', () => {
@@ -20,7 +21,9 @@ describe('validateStatePath', () => {
     });
 
     it('accepts UUID-with-dashes segments', () => {
-      expect(validateStatePath('outputs.a1b2c3d4-e5f6-7890-abcd-ef1234567890.out')).toEqual({ valid: true });
+      expect(validateStatePath('outputs.a1b2c3d4-e5f6-7890-abcd-ef1234567890.out')).toEqual({
+        valid: true,
+      });
     });
   });
 
@@ -37,7 +40,10 @@ describe('validateStatePath', () => {
 
   describe('grammar guard', () => {
     it('rejects a leading-digit first segment', () => {
-      expect(validateStatePath('0outputs.field')).toEqual({ valid: false, error: 'INVALID_GRAMMAR' });
+      expect(validateStatePath('0outputs.field')).toEqual({
+        valid: false,
+        error: 'INVALID_GRAMMAR',
+      });
     });
 
     it('rejects a leading dot', () => {
@@ -45,7 +51,10 @@ describe('validateStatePath', () => {
     });
 
     it('rejects spaces', () => {
-      expect(validateStatePath('outputs .field')).toEqual({ valid: false, error: 'INVALID_GRAMMAR' });
+      expect(validateStatePath('outputs .field')).toEqual({
+        valid: false,
+        error: 'INVALID_GRAMMAR',
+      });
     });
 
     it('rejects an unclosed bracket', () => {
@@ -55,12 +64,16 @@ describe('validateStatePath', () => {
 
   describe('depth guard', () => {
     it('accepts exactly 16 segments', () => {
-      const path = Array.from({ length: 16 }, (_, i) => (i === 0 ? 'a' : `s${i}`)).join('.');
+      const path = Array.from({ length: 16 }, (_, i) => (i === 0 ? 'a' : `s${String(i)}`)).join(
+        '.'
+      );
       expect(validateStatePath(path)).toEqual({ valid: true });
     });
 
     it('rejects 17 segments', () => {
-      const path = Array.from({ length: 17 }, (_, i) => (i === 0 ? 'a' : `s${i}`)).join('.');
+      const path = Array.from({ length: 17 }, (_, i) => (i === 0 ? 'a' : `s${String(i)}`)).join(
+        '.'
+      );
       expect(validateStatePath(path)).toEqual({ valid: false, error: 'INVALID_DEPTH' });
     });
   });

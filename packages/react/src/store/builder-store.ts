@@ -1,11 +1,12 @@
-import { create } from 'zustand';
 import type { ValueBinding, PipelineDraft } from '@openpipeline/core';
+import { create } from 'zustand';
+
 import type { BuilderNode, BuilderEdge } from '../types.js';
 
 /** Derive entry (no incoming) and exit (no outgoing) nodes. */
 function deriveEntryExit(
   nodes: ReadonlyArray<{ id: string }>,
-  edges: ReadonlyArray<{ fromNodeId: string; toNodeId: string }>,
+  edges: ReadonlyArray<{ fromNodeId: string; toNodeId: string }>
 ): { startTargets: string[]; endSources: string[] } {
   const incoming = new Map<string, number>();
   const outgoing = new Map<string, number>();
@@ -37,33 +38,33 @@ export interface BuilderState {
   dirty: boolean;
 
   // ── actions ──
-  loadDraft(draft: PipelineDraft & { id?: string }): void;
-  reset(): void;
-  setName(name: string): void;
-  setDescription(d: string): void;
-  addNode(node: BuilderNode): void;
-  removeNode(id: string): void;
-  updateNodePosition(id: string, x: number, y: number): void;
-  setNodePositions(positions: ReadonlyArray<{ id: string; x: number; y: number }>): void;
-  updateMarkerPosition(which: 'start' | 'end', x: number, y: number): void;
-  updateNodeLabel(id: string, label: string): void;
-  updateNodeInput(nodeId: string, paramName: string, binding: ValueBinding): void;
-  removeNodeInput(nodeId: string, paramName: string): void;
-  addEdge(edge: BuilderEdge): void;
-  removeEdge(edgeId: string): void;
-  addStartTarget(nodeId: string): void;
-  removeStartTarget(nodeId: string): void;
-  addEndSource(nodeId: string): void;
-  removeEndSource(nodeId: string): void;
-  selectNode(id: string | null): void;
-  markClean(): void;
-  toDraft(): PipelineDraft;
+  // Declared as function-property signatures (not method signatures) because
+  // these are Zustand actions: they hold no meaningful `this` and are designed
+  // to be selected/destructured and called standalone (e.g. `useStore((s) =>
+  // s.addNode)`). Property syntax avoids unbound-method false positives and
+  // gives strict contravariant parameter checking.
+  loadDraft: (draft: PipelineDraft & { id?: string }) => void;
+  reset: () => void;
+  setName: (name: string) => void;
+  setDescription: (d: string) => void;
+  addNode: (node: BuilderNode) => void;
+  removeNode: (id: string) => void;
+  updateNodePosition: (id: string, x: number, y: number) => void;
+  setNodePositions: (positions: ReadonlyArray<{ id: string; x: number; y: number }>) => void;
+  updateMarkerPosition: (which: 'start' | 'end', x: number, y: number) => void;
+  updateNodeLabel: (id: string, label: string) => void;
+  updateNodeInput: (nodeId: string, paramName: string, binding: ValueBinding) => void;
+  removeNodeInput: (nodeId: string, paramName: string) => void;
+  addEdge: (edge: BuilderEdge) => void;
+  removeEdge: (edgeId: string) => void;
+  addStartTarget: (nodeId: string) => void;
+  removeStartTarget: (nodeId: string) => void;
+  addEndSource: (nodeId: string) => void;
+  removeEndSource: (nodeId: string) => void;
+  selectNode: (id: string | null) => void;
+  markClean: () => void;
+  toDraft: () => PipelineDraft;
 }
-
-const genId = (): string =>
-  typeof crypto !== 'undefined' && 'randomUUID' in crypto
-    ? crypto.randomUUID()
-    : `n_${Math.random().toString(36).slice(2)}`;
 
 /**
  * Create a pipeline-builder store. Unlike the Mate-X original, this carries only
@@ -85,8 +86,10 @@ export function createBuilderStore() {
     dirty: false,
 
     loadDraft(draft) {
+      // PipelineNodeRow.id / PipelineEdgeRow.id are required (`string`) in the
+      // core contract, so loaded drafts always carry ids — no generation needed.
       const nodes: BuilderNode[] = draft.nodes.map((n) => ({
-        id: n.id ?? genId(),
+        id: n.id,
         nodeType: n.nodeType,
         key: n.key,
         label: n.label,
@@ -95,7 +98,7 @@ export function createBuilderStore() {
         positionY: n.positionY,
       }));
       const edges: BuilderEdge[] = draft.edges.map((e) => ({
-        id: e.id ?? genId(),
+        id: e.id,
         fromNodeId: e.fromNodeId,
         toNodeId: e.toNodeId,
         label: e.label,
@@ -130,12 +133,18 @@ export function createBuilderStore() {
       });
     },
 
-    setName: (name) => set({ name, dirty: true }),
-    setDescription: (description) => set({ description, dirty: true }),
+    setName: (name) => {
+      set({ name, dirty: true });
+    },
+    setDescription: (description) => {
+      set({ description, dirty: true });
+    },
 
-    addNode: (node) => set((s) => ({ nodes: [...s.nodes, node], dirty: true })),
+    addNode: (node) => {
+      set((s) => ({ nodes: [...s.nodes, node], dirty: true }));
+    },
 
-    removeNode: (id) =>
+    removeNode: (id) => {
       set((s) => ({
         nodes: s.nodes.filter((n) => n.id !== id),
         edges: s.edges.filter((e) => e.fromNodeId !== id && e.toNodeId !== id),
@@ -143,80 +152,110 @@ export function createBuilderStore() {
         endSources: s.endSources.filter((t) => t !== id),
         selectedNodeId: s.selectedNodeId === id ? null : s.selectedNodeId,
         dirty: true,
-      })),
+      }));
+    },
 
-    updateNodePosition: (id, x, y) =>
+    updateNodePosition: (id, x, y) => {
       set((s) => ({
         nodes: s.nodes.map((n) => (n.id === id ? { ...n, positionX: x, positionY: y } : n)),
         dirty: true,
-      })),
+      }));
+    },
 
-    setNodePositions: (positions) =>
+    setNodePositions: (positions) => {
       set((s) => {
         const byId = new Map(positions.map((p) => [p.id, p]));
-        let changed = false;
+        // Derive `changed` directly (no closure-mutated flag, which TS
+        // control-flow analysis can't track and ESLint would flag as dead).
+        const changed = s.nodes.some((n) => byId.has(n.id));
+        if (!changed) return {};
         const nodes = s.nodes.map((n) => {
           const p = byId.get(n.id);
-          if (!p) return n;
-          changed = true;
-          return { ...n, positionX: p.x, positionY: p.y };
+          return p ? { ...n, positionX: p.x, positionY: p.y } : n;
         });
-        return changed ? { nodes, dirty: true } : {};
-      }),
+        return { nodes, dirty: true };
+      });
+    },
 
-    updateMarkerPosition: (which, x, y) =>
-      set((s) =>
-        which === 'start' ? { startMarker: { x, y }, dirty: true } : { endMarker: { x, y }, dirty: true },
-      ),
+    updateMarkerPosition: (which, x, y) => {
+      set(
+        which === 'start'
+          ? { startMarker: { x, y }, dirty: true }
+          : { endMarker: { x, y }, dirty: true }
+      );
+    },
 
-    updateNodeLabel: (id, label) =>
-      set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? { ...n, label } : n)), dirty: true })),
+    updateNodeLabel: (id, label) => {
+      set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? { ...n, label } : n)), dirty: true }));
+    },
 
-    updateNodeInput: (nodeId, paramName, binding) =>
+    updateNodeInput: (nodeId, paramName, binding) => {
       set((s) => ({
         nodes: s.nodes.map((n) =>
-          n.id === nodeId ? { ...n, inputs: { ...n.inputs, [paramName]: binding } } : n,
+          n.id === nodeId ? { ...n, inputs: { ...n.inputs, [paramName]: binding } } : n
         ),
         dirty: true,
-      })),
+      }));
+    },
 
-    removeNodeInput: (nodeId, paramName) =>
+    removeNodeInput: (nodeId, paramName) => {
       set((s) => ({
         nodes: s.nodes.map((n) => {
           if (n.id !== nodeId) return n;
-          const inputs = { ...n.inputs };
-          delete inputs[paramName];
+          // Immutable key removal: keep everything except the named param,
+          // avoiding `delete` on a dynamically-computed key.
+          const { [paramName]: _removed, ...inputs } = n.inputs;
           return { ...n, inputs };
         }),
         dirty: true,
-      })),
+      }));
+    },
 
-    addEdge: (edge) =>
+    addEdge: (edge) => {
       set((s) => {
         const dup = s.edges.find(
-          (e) => e.fromNodeId === edge.fromNodeId && e.toNodeId === edge.toNodeId && e.label === edge.label,
+          (e) =>
+            e.fromNodeId === edge.fromNodeId &&
+            e.toNodeId === edge.toNodeId &&
+            e.label === edge.label
         );
         if (dup) return {};
         return { edges: [...s.edges, edge], dirty: true };
-      }),
+      });
+    },
 
-    removeEdge: (edgeId) =>
+    removeEdge: (edgeId) => {
       set((s) => {
         const edges = s.edges.filter((e) => e.id !== edgeId);
         return edges.length !== s.edges.length ? { edges, dirty: true } : {};
-      }),
+      });
+    },
 
-    addStartTarget: (nodeId) =>
-      set((s) => (s.startTargets.includes(nodeId) ? {} : { startTargets: [...s.startTargets, nodeId], dirty: true })),
-    removeStartTarget: (nodeId) =>
-      set((s) => ({ startTargets: s.startTargets.filter((t) => t !== nodeId), dirty: true })),
-    addEndSource: (nodeId) =>
-      set((s) => (s.endSources.includes(nodeId) ? {} : { endSources: [...s.endSources, nodeId], dirty: true })),
-    removeEndSource: (nodeId) =>
-      set((s) => ({ endSources: s.endSources.filter((t) => t !== nodeId), dirty: true })),
+    addStartTarget: (nodeId) => {
+      set((s) =>
+        s.startTargets.includes(nodeId)
+          ? {}
+          : { startTargets: [...s.startTargets, nodeId], dirty: true }
+      );
+    },
+    removeStartTarget: (nodeId) => {
+      set((s) => ({ startTargets: s.startTargets.filter((t) => t !== nodeId), dirty: true }));
+    },
+    addEndSource: (nodeId) => {
+      set((s) =>
+        s.endSources.includes(nodeId) ? {} : { endSources: [...s.endSources, nodeId], dirty: true }
+      );
+    },
+    removeEndSource: (nodeId) => {
+      set((s) => ({ endSources: s.endSources.filter((t) => t !== nodeId), dirty: true }));
+    },
 
-    selectNode: (id) => set({ selectedNodeId: id }),
-    markClean: () => set({ dirty: false }),
+    selectNode: (id) => {
+      set({ selectedNodeId: id });
+    },
+    markClean: () => {
+      set({ dirty: false });
+    },
 
     toDraft(): PipelineDraft {
       const s = get();

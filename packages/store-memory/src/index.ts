@@ -72,17 +72,17 @@ export class MemoryStore implements PipelineStore, StepRecorder {
 
   // ── PipelineStore ─────────────────────────────────────────────────────────
 
-  async load(pipelineId: string): Promise<PipelineWithGraph> {
+  load(pipelineId: string): Promise<PipelineWithGraph> {
     const pipeline = this.pipelines.get(pipelineId);
     if (!pipeline) throw new Error(`Pipeline not found: ${pipelineId}`);
-    return {
+    return Promise.resolve({
       pipeline,
       nodes: this.nodes.get(pipelineId) ?? [],
       edges: this.edges.get(pipelineId) ?? [],
-    };
+    });
   }
 
-  async save(draft: PipelineDraft): Promise<string> {
+  save(draft: PipelineDraft): Promise<string> {
     const now = new Date();
     const id = draft.id ?? genId('wf');
     const existing = this.pipelines.get(id);
@@ -97,16 +97,16 @@ export class MemoryStore implements PipelineStore, StepRecorder {
     this.pipelines.set(id, pipeline);
     this.nodes.set(
       id,
-      draft.nodes.map((n) => ({ ...n, pipelineId: id })),
+      draft.nodes.map((n) => ({ ...n, pipelineId: id }))
     );
     this.edges.set(
       id,
-      draft.edges.map((e) => ({ ...e, pipelineId: id })),
+      draft.edges.map((e) => ({ ...e, pipelineId: id }))
     );
-    return id;
+    return Promise.resolve(id);
   }
 
-  async createRun(run: RunCreate): Promise<{ runId: string; startedAt: Date }> {
+  createRun(run: RunCreate): Promise<{ runId: string; startedAt: Date }> {
     const runId = genId('run');
     const startedAt = new Date();
     this.runs.set(runId, {
@@ -119,37 +119,41 @@ export class MemoryStore implements PipelineStore, StepRecorder {
       startedAt,
     });
     this.seqByRun.set(runId, 0);
-    return { runId, startedAt };
+    return Promise.resolve({ runId, startedAt });
   }
 
-  async completeRun(runId: string, result: RunComplete): Promise<void> {
+  completeRun(runId: string, result: RunComplete): Promise<void> {
     const run = this.runs.get(runId);
-    if (!run) return;
+    if (!run) return Promise.resolve();
     run.status = result.status;
     run.output = result.output;
     run.finishedAt = new Date();
     if (result.cost) run.cost = mergeCost(run.cost, result.cost);
+    return Promise.resolve();
   }
 
-  async updateRunCostAtomic(runId: string, delta: CostBundle): Promise<void> {
+  updateRunCostAtomic(runId: string, delta: CostBundle): Promise<void> {
     const run = this.runs.get(runId);
-    if (!run) return;
+    if (!run) return Promise.resolve();
     run.cost = mergeCost(run.cost, delta);
+    return Promise.resolve();
   }
 
-  async listRuns(pipelineId: string, opts?: { limit?: number }): Promise<RunSummary[]> {
+  listRuns(pipelineId: string, opts?: { limit?: number }): Promise<RunSummary[]> {
     const all = Array.from(this.runs.values())
       .filter((r) => r.pipelineId === pipelineId)
       .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
     const limited = opts?.limit ? all.slice(0, opts.limit) : all;
-    return limited.map((r) => ({
-      id: r.id,
-      pipelineId: r.pipelineId,
-      status: r.status,
-      startedAt: r.startedAt,
-      finishedAt: r.finishedAt,
-      cost: r.cost,
-    }));
+    return Promise.resolve(
+      limited.map((r) => ({
+        id: r.id,
+        pipelineId: r.pipelineId,
+        status: r.status,
+        startedAt: r.startedAt,
+        finishedAt: r.finishedAt,
+        cost: r.cost,
+      }))
+    );
   }
 
   // ── StepRecorder ──────────────────────────────────────────────────────────
@@ -169,14 +173,15 @@ export class MemoryStore implements PipelineStore, StepRecorder {
     return id;
   }
 
-  async finish(stepId: string, result: StepFinish): Promise<void> {
+  finish(stepId: string, result: StepFinish): Promise<void> {
     const step = this.steps.get(stepId);
-    if (!step) return;
+    if (!step) return Promise.resolve();
     step.status = result.status;
     step.input = result.input;
     step.output = result.output;
     step.cost = result.cost;
     step.finishedAt = new Date();
+    return Promise.resolve();
   }
 
   async startChild(params: {
@@ -205,13 +210,14 @@ export class MemoryStore implements PipelineStore, StepRecorder {
     return this.finish(childStepId, result);
   }
 
-  async finalizeStaleSteps(runId: string): Promise<void> {
+  finalizeStaleSteps(runId: string): Promise<void> {
     for (const step of this.steps.values()) {
       if (step.runId === runId && step.status === 'RUNNING') {
         step.status = 'FAILED';
         step.finishedAt = new Date();
       }
     }
+    return Promise.resolve();
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
@@ -230,7 +236,9 @@ export class MemoryStore implements PipelineStore, StepRecorder {
 
   // ── Test/inspection helpers ─────────────────────────────────────────────────
 
-  getSteps(runId: string): ReadonlyArray<{ nodeLabel: string; status: RunStepStatus; sequenceIndex: number }> {
+  getSteps(
+    runId: string
+  ): ReadonlyArray<{ nodeLabel: string; status: RunStepStatus; sequenceIndex: number }> {
     return Array.from(this.steps.values())
       .filter((s) => s.runId === runId)
       .sort((a, b) => a.sequenceIndex - b.sequenceIndex)

@@ -1,11 +1,13 @@
-import { z } from 'zod';
 import { defineNode, type NodeSpec, type IfNodeOutput } from '@openpipeline/core';
+import { z } from 'zod';
 
 export const IfInputSchema = z.object({
   condition: z
     .unknown()
     .optional()
-    .describe('Value evaluated for truthiness. A state binding is recommended, e.g. outputs.<nodeId>.field'),
+    .describe(
+      'Value evaluated for truthiness. A state binding is recommended, e.g. outputs.<nodeId>.field'
+    ),
 });
 
 export type IfInput = z.infer<typeof IfInputSchema>;
@@ -25,9 +27,10 @@ export function createIfNodeSpec(): NodeSpec<IfInput, IfNodeOutput> {
     icon: 'git-branch',
     inputSchema: IfInputSchema,
     outputSchema: IfOutputSchema,
-    handler: async (input) => ({
-      kind: 'control.if',
-      branch: input.condition ? 'true' : 'false',
-    }),
+    handler: (input) =>
+      Promise.resolve({
+        kind: 'control.if',
+        branch: input.condition ? 'true' : 'false',
+      }),
   });
 }

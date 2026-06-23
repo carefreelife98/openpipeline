@@ -1,4 +1,5 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+
 import type { BuilderNode, NodeRunStatus } from '../types.js';
 
 const STATUS_COLOR: Record<NodeRunStatus, string> = {
@@ -42,7 +43,9 @@ export function PipelineNodeCard(props: NodeProps): React.JSX.Element {
       <Handle type="target" position={Position.Left} style={{ background: '#94a3b8' }} />
 
       <div style={{ padding: '8px 12px', borderBottom: '1px solid #f1f5f9' }}>
-        <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        <div
+          style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5 }}
+        >
           {node.nodeType}
         </div>
         <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{node.label}</div>
@@ -50,7 +53,9 @@ export function PipelineNodeCard(props: NodeProps): React.JSX.Element {
       <div style={{ padding: '6px 12px', fontSize: 12, color: '#475569' }}>
         <code style={{ fontSize: 11, color: '#7c3aed' }}>{node.key}</code>
         {statusColor && (
-          <span style={{ float: 'right', color: statusColor, fontWeight: 600 }}>{data.runStatus}</span>
+          <span style={{ float: 'right', color: statusColor, fontWeight: 600 }}>
+            {data.runStatus}
+          </span>
         )}
       </div>
 

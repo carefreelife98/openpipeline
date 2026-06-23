@@ -2,11 +2,7 @@
 // Single-tenant by default (personal direct use); a CatalogPolicy adds
 // multi-tenant curation / allowlists / per-user OAuth without touching core.
 
-export type {
-  McpServerConfig,
-  McpTransportType,
-  McpAuthType,
-} from './types.js';
+export type { McpServerConfig, McpTransportType, McpAuthType } from './types.js';
 export {
   McpSchemaConverter,
   type McpSchemaConversionResult,

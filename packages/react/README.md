@@ -19,7 +19,9 @@ import '@xyflow/react/dist/style.css';
 import { ReactFlowProvider } from '@xyflow/react';
 import { BuilderCanvas, createBuilderStore } from '@openpipeline/react';
 const store = createBuilderStore();
-<ReactFlowProvider><BuilderCanvas store={store} /></ReactFlowProvider>;
+<ReactFlowProvider>
+  <BuilderCanvas store={store} />
+</ReactFlowProvider>;
 ```
 
 See the [root README](https://github.com/carefreelife98/openpipeline#readme) for the full quickstart and the playground.

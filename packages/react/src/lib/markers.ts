@@ -10,9 +10,11 @@ export const DEFAULT_END_MARKER = { x: 800, y: 200 };
 export const startEdgeIdFor = (nodeId: string): string => `${START_EDGE_ID_PREFIX}${nodeId}`;
 export const endEdgeIdFor = (nodeId: string): string => `${END_EDGE_ID_PREFIX}${nodeId}`;
 
-export const isStartMarkerEdge = (edgeId: string): boolean => edgeId.startsWith(START_EDGE_ID_PREFIX);
+export const isStartMarkerEdge = (edgeId: string): boolean =>
+  edgeId.startsWith(START_EDGE_ID_PREFIX);
 export const isEndMarkerEdge = (edgeId: string): boolean => edgeId.startsWith(END_EDGE_ID_PREFIX);
-export const isMarkerEdge = (edgeId: string): boolean => isStartMarkerEdge(edgeId) || isEndMarkerEdge(edgeId);
+export const isMarkerEdge = (edgeId: string): boolean =>
+  isStartMarkerEdge(edgeId) || isEndMarkerEdge(edgeId);
 
 /** IF source handle id (`branch-true`/`branch-false`) -> edge label. */
 export function sourceLabelFromHandle(handle: string | null | undefined): string | undefined {

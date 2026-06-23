@@ -25,7 +25,12 @@ export {
   stripMarkers,
   type StripMarkersResult,
 } from './lib/serializer.js';
-export { layoutWithDagre, type LayoutInputNode, type LayoutInputEdge, type LayoutOptions } from './lib/auto-layout.js';
+export {
+  layoutWithDagre,
+  type LayoutInputNode,
+  type LayoutInputEdge,
+  type LayoutOptions,
+} from './lib/auto-layout.js';
 export * from './lib/markers.js';
 
 export {

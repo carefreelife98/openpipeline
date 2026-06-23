@@ -1,4 +1,3 @@
-import { useMemo, useCallback } from 'react';
 import {
   ReactFlow,
   Background,
@@ -11,18 +10,23 @@ import {
   type EdgeTypes,
   type Node as RfNode,
 } from '@xyflow/react';
+import { useMemo, useCallback } from 'react';
+
+import {
+  isMarkerEdge,
+  isStartMarkerEdge,
+  sourceLabelFromHandle,
+  START_MARKER_ID,
+  END_MARKER_ID,
+} from '../lib/markers.js';
+import { buildDisplayNodes, buildDisplayEdges, stripMarkers } from '../lib/serializer.js';
 import type { BuilderStore } from '../store/builder-store.js';
 import type { NodeRunStatus, BuilderStrings } from '../types.js';
 import { DEFAULT_STRINGS } from '../types.js';
-import {
-  buildDisplayNodes,
-  buildDisplayEdges,
-  stripMarkers,
-} from '../lib/serializer.js';
-import { isMarkerEdge, isStartMarkerEdge, sourceLabelFromHandle, START_MARKER_ID, END_MARKER_ID } from '../lib/markers.js';
-import { PipelineNodeCard, type PipelineNodeData } from './PipelineNodeCard.js';
+
 import { DeletableEdge } from './DeletableEdge.js';
 import { StartMarker, EndMarker } from './markers.js';
+import { PipelineNodeCard, type PipelineNodeData } from './PipelineNodeCard.js';
 
 const DEFAULT_NODE_TYPES: NodeTypes = {
   pipelineNode: PipelineNodeCard,
@@ -92,11 +96,12 @@ export function BuilderCanvas(props: BuilderCanvasProps): React.JSX.Element {
       start: strings.startLabel,
       end: strings.endLabel,
     });
-    if (!props.nodeRunStatus) return built;
+    const runStatus = props.nodeRunStatus;
+    if (!runStatus) return built;
     return built.map((n) =>
       n.type === 'pipelineNode'
-        ? { ...n, data: { ...(n.data as PipelineNodeData), runStatus: props.nodeRunStatus![n.id] } }
-        : n,
+        ? { ...n, data: { ...(n.data as PipelineNodeData), runStatus: runStatus[n.id] } }
+        : n
     );
   }, [nodes, startMarker, endMarker, strings.startLabel, strings.endLabel, props.nodeRunStatus]);
 
@@ -104,7 +109,7 @@ export function BuilderCanvas(props: BuilderCanvasProps): React.JSX.Element {
     (edgeId: string) => {
       if (isMarkerEdge(edgeId)) {
         const { startTargets: st, endSources: es } = stripMarkers([
-          { id: edgeId, source: '', target: '' } as never,
+          { id: edgeId, source: '', target: '' },
         ]);
         void st;
         void es;
@@ -116,20 +121,25 @@ export function BuilderCanvas(props: BuilderCanvasProps): React.JSX.Element {
         removeEdge(edgeId);
       }
     },
-    [removeEdge, removeStartTarget, removeEndSource],
+    [removeEdge, removeStartTarget, removeEndSource]
   );
 
   const displayEdges = useMemo(() => {
     const built = buildDisplayEdges(edges, startTargets, endSources);
-    return built.map((e) => ({ ...e, data: { ...e.data, onDelete: editable ? handleDeleteEdge : undefined } }));
+    return built.map((e) => ({
+      ...e,
+      data: { ...e.data, onDelete: editable ? handleDeleteEdge : undefined },
+    }));
   }, [edges, startTargets, endSources, editable, handleDeleteEdge]);
 
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
       for (const change of changes) {
         if (change.type === 'position' && change.position && !change.dragging) {
-          if (change.id === START_MARKER_ID) updateMarkerPosition('start', change.position.x, change.position.y);
-          else if (change.id === END_MARKER_ID) updateMarkerPosition('end', change.position.x, change.position.y);
+          if (change.id === START_MARKER_ID)
+            updateMarkerPosition('start', change.position.x, change.position.y);
+          else if (change.id === END_MARKER_ID)
+            updateMarkerPosition('end', change.position.x, change.position.y);
           else updateNodePosition(change.id, change.position.x, change.position.y);
         } else if (change.type === 'remove') {
           if (change.id !== START_MARKER_ID && change.id !== END_MARKER_ID) removeNode(change.id);
@@ -138,7 +148,7 @@ export function BuilderCanvas(props: BuilderCanvasProps): React.JSX.Element {
         }
       }
     },
-    [updateNodePosition, updateMarkerPosition, removeNode, selectNode],
+    [updateNodePosition, updateMarkerPosition, removeNode, selectNode]
   );
 
   const handleEdgesChange = useCallback(
@@ -147,7 +157,7 @@ export function BuilderCanvas(props: BuilderCanvasProps): React.JSX.Element {
         if (change.type === 'remove') handleDeleteEdge(change.id);
       }
     },
-    [handleDeleteEdge],
+    [handleDeleteEdge]
   );
 
   const handleConnect = useCallback(
@@ -169,16 +179,25 @@ export function BuilderCanvas(props: BuilderCanvasProps): React.JSX.Element {
         label: sourceLabelFromHandle(conn.sourceHandle) ?? null,
       });
     },
-    [addEdge, addStartTarget, addEndSource],
+    [addEdge, addStartTarget, addEndSource]
   );
 
-  const nodeTypes = useMemo(() => ({ ...DEFAULT_NODE_TYPES, ...props.nodeTypes }), [props.nodeTypes]);
-  const edgeTypes = useMemo(() => ({ ...DEFAULT_EDGE_TYPES, ...props.edgeTypes }), [props.edgeTypes]);
+  const nodeTypes = useMemo(
+    () => ({ ...DEFAULT_NODE_TYPES, ...props.nodeTypes }),
+    [props.nodeTypes]
+  );
+  const edgeTypes = useMemo(
+    () => ({ ...DEFAULT_EDGE_TYPES, ...props.edgeTypes }),
+    [props.edgeTypes]
+  );
 
   const isEmpty = nodes.length === 0;
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%', ...props.style }} className={props.className}>
+    <div
+      style={{ position: 'relative', width: '100%', height: '100%', ...props.style }}
+      className={props.className}
+    >
       <ReactFlow
         nodes={displayNodes}
         edges={displayEdges}
@@ -195,7 +214,11 @@ export function BuilderCanvas(props: BuilderCanvasProps): React.JSX.Element {
       >
         <Background gap={24} color="#e2e8f0" />
         <Controls showInteractive={false} />
-        <MiniMap pannable zoomable nodeColor={(n: RfNode) => (n.type === 'pipelineNode' ? '#6366f1' : '#94a3b8')} />
+        <MiniMap
+          pannable
+          zoomable
+          nodeColor={(n: RfNode) => (n.type === 'pipelineNode' ? '#6366f1' : '#94a3b8')}
+        />
       </ReactFlow>
 
       {isEmpty && (
@@ -213,7 +236,9 @@ export function BuilderCanvas(props: BuilderCanvasProps): React.JSX.Element {
             textAlign: 'center',
           }}
         >
-          <div style={{ fontSize: 18, fontWeight: 600, color: '#64748b' }}>{strings.emptyTitle}</div>
+          <div style={{ fontSize: 18, fontWeight: 600, color: '#64748b' }}>
+            {strings.emptyTitle}
+          </div>
           <div style={{ fontSize: 13, marginTop: 6, maxWidth: 360 }}>{strings.emptyHint}</div>
         </div>
       )}

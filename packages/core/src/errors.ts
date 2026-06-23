@@ -13,7 +13,7 @@ export class PipelineCompileError extends Error {
   override readonly name = 'PipelineCompileError';
   constructor(
     readonly entries: CompileErrorEntry[],
-    readonly pipelineName: string,
+    readonly pipelineName: string
   ) {
     super(`Pipeline "${pipelineName}" failed to compile: ${entries.map((e) => e.kind).join(', ')}`);
   }
@@ -32,7 +32,7 @@ export class PipelineNodeExecutionError extends Error {
   override readonly name = 'PipelineNodeExecutionError';
   constructor(
     readonly nodeId: string,
-    readonly pipelineError: PipelineError,
+    readonly pipelineError: PipelineError
   ) {
     super(pipelineError.message);
   }

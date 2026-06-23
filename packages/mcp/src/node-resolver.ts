@@ -1,4 +1,3 @@
-import { z } from 'zod';
 import {
   NOOP_LOGGER,
   PipelineNodeExecutionError,
@@ -11,6 +10,8 @@ import {
   type McpNodeSpecMeta,
   type Logger,
 } from '@openpipeline/core';
+import { z } from 'zod';
+
 import { McpSchemaConverter } from './schema-converter.js';
 
 export interface ParsedMcpKey {
@@ -30,12 +31,12 @@ export function parseMcpKey(key: string): ParsedMcpKey {
 }
 
 /** Generic MCP tool output schema (used when the tool declares no output schema). */
-const GenericMcpOutputSchema = z.object({
+const GenericMcpOutputSchema: z.ZodType<McpToolNodeOutput> = z.object({
   kind: z.literal('mcp_tool'),
   providerKey: z.string(),
   toolName: z.string(),
   output: z.unknown(),
-}) as unknown as z.ZodType<McpToolNodeOutput>;
+});
 
 /**
  * Resolves `mcp:<provider>:<tool>` keys to synthesized NodeSpecs at compile time,
@@ -49,41 +50,50 @@ export class McpNodeResolverImpl implements McpNodeResolver {
     this.converter = new McpSchemaConverter(logger);
   }
 
-  async resolveSpec(
+  // Resolution is fully synchronous (catalog is already cached), but the
+  // McpNodeResolver contract is `Promise<NodeSpec>`. We honor that return type
+  // without a misleading `async` keyword (there is no I/O to await), wrapping the
+  // result so throws still surface as rejections for direct callers.
+  resolveSpec(
     key: string,
-    ctx: { userId?: string; tenantId?: string; mcpCatalogCache?: readonly unknown[] },
+    ctx: { userId?: string; tenantId?: string; mcpCatalogCache?: readonly unknown[] }
   ): Promise<NodeSpec> {
-    const { providerKey, toolName } = parseMcpKey(key);
-    const providers = (ctx.mcpCatalogCache ?? []) as readonly ResolvedProvider[];
+    return Promise.resolve().then(() => {
+      const { providerKey, toolName } = parseMcpKey(key);
+      const providers = (ctx.mcpCatalogCache ?? []) as readonly ResolvedProvider[];
 
-    const provider = providers.find((p) => p.key === providerKey);
-    if (!provider) {
-      throw new PipelineNodeExecutionError(key, {
-        kind: 'NODE_EXECUTION',
-        code: 'NODE_MCP_PROVIDER_UNAVAILABLE',
-        message: `MCP provider not available: ${providerKey}. It may be disabled or disconnected.`,
+      const provider = providers.find((p) => p.key === providerKey);
+      if (!provider) {
+        throw new PipelineNodeExecutionError(key, {
+          kind: 'NODE_EXECUTION',
+          code: 'NODE_MCP_PROVIDER_UNAVAILABLE',
+          message: `MCP provider not available: ${providerKey}. It may be disabled or disconnected.`,
+        });
+      }
+
+      const tool = provider.tools.find((t) => t.name === toolName);
+      if (!tool) {
+        throw new PipelineNodeExecutionError(key, {
+          kind: 'NODE_EXECUTION',
+          code: 'NODE_MCP_TOOL_NOT_EXPOSED',
+          message: `MCP tool not exposed: ${providerKey}/${toolName}.`,
+        });
+      }
+
+      const inputResult = this.converter.convert(tool.inputSchema ?? { type: 'object' }, {
+        providerKey,
+        toolName,
       });
-    }
+      if (!inputResult.success) {
+        throw new PipelineNodeExecutionError(key, {
+          kind: 'NODE_EXECUTION',
+          code: 'NODE_MCP_SCHEMA_INCOMPATIBLE',
+          message: `MCP tool input schema could not be converted: ${providerKey}/${toolName} (${inputResult.reason.kind}).`,
+        });
+      }
 
-    const tool = provider.tools.find((t) => t.name === toolName);
-    if (!tool) {
-      throw new PipelineNodeExecutionError(key, {
-        kind: 'NODE_EXECUTION',
-        code: 'NODE_MCP_TOOL_NOT_EXPOSED',
-        message: `MCP tool not exposed: ${providerKey}/${toolName}.`,
-      });
-    }
-
-    const inputResult = this.converter.convert(tool.inputSchema ?? { type: 'object' }, { providerKey, toolName });
-    if (!inputResult.success) {
-      throw new PipelineNodeExecutionError(key, {
-        kind: 'NODE_EXECUTION',
-        code: 'NODE_MCP_SCHEMA_INCOMPATIBLE',
-        message: `MCP tool input schema could not be converted: ${providerKey}/${toolName} (${inputResult.reason.kind}).`,
-      });
-    }
-
-    return this.buildSpec(provider, tool, inputResult.zodSchema);
+      return this.buildSpec(provider, tool, inputResult.zodSchema);
+    });
   }
 
   private buildSpec(provider: ResolvedProvider, tool: ResolvedTool, inputZod: z.ZodType): NodeSpec {
@@ -117,10 +127,13 @@ export class McpNodeResolverImpl implements McpNodeResolver {
       meta: { mcp: meta },
     };
 
-    return spec as NodeSpec;
+    return spec;
   }
 
-  private synthesizeOutputSchema(provider: ResolvedProvider, tool: ResolvedTool): z.ZodType<McpToolNodeOutput> {
+  private synthesizeOutputSchema(
+    provider: ResolvedProvider,
+    tool: ResolvedTool
+  ): z.ZodType<McpToolNodeOutput> {
     if (!tool.outputSchema) return GenericMcpOutputSchema;
     const result = this.converter.convert(tool.outputSchema, {
       providerKey: provider.key,
@@ -132,6 +145,6 @@ export class McpNodeResolverImpl implements McpNodeResolver {
       providerKey: z.string(),
       toolName: z.string(),
       output: result.zodSchema,
-    }) as unknown as z.ZodType<McpToolNodeOutput>;
+    });
   }
 }

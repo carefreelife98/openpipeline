@@ -1,4 +1,5 @@
 import { z } from 'zod';
+
 import type { PipelineError } from './state.js';
 
 /** Normalize any thrown value into a structured PipelineError. */
@@ -19,9 +20,14 @@ export function toPipelineError(err: unknown): PipelineError {
  * Compute the residual input schema for the auto-param resolver: the input
  * schema with all non-auto keys omitted. Requires a ZodObject input schema.
  */
-export function computeRemainingSchema(inputSchema: z.ZodType, keysToOmit: readonly string[]): z.ZodType {
+export function computeRemainingSchema(
+  inputSchema: z.ZodType,
+  keysToOmit: readonly string[]
+): z.ZodType {
   if (!(inputSchema instanceof z.ZodObject)) {
-    throw new Error('[computeRemainingSchema] inputSchema must be a ZodObject for auto-param resolution');
+    throw new Error(
+      '[computeRemainingSchema] inputSchema must be a ZodObject for auto-param resolution'
+    );
   }
   if (keysToOmit.length === 0) return inputSchema;
   const omitMask: Record<string, true> = {};

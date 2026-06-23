@@ -14,11 +14,50 @@ import {
   type PipelineNodeRow,
   type PipelineEdgeRow,
   type CostBundle,
+  type NodeType,
   type RunStatus,
+  type NodeInputs,
 } from '@openpipeline/core';
+
 import type { PrismaClientLike } from './prisma-types.js';
 
 export type { PrismaClientLike } from './prisma-types.js';
+
+// ── DB row shapes ─────────────────────────────────────────────────────────────
+// The concrete column shapes returned by the Prisma delegates, matching
+// prisma/schema.prisma. JSON columns surface as `unknown` (arbitrary JSON);
+// each read declares exactly the projection it requests so results are fully
+// typed without `as`-casts at the access sites.
+
+interface DbPipelineNode {
+  id: string;
+  pipelineId: string;
+  nodeType: NodeType;
+  key: string;
+  label: string;
+  inputs: unknown;
+  positionX: number | null;
+  positionY: number | null;
+}
+
+interface DbPipelineEdge {
+  id: string;
+  pipelineId: string;
+  fromNodeId: string;
+  toNodeId: string;
+  label: string | null;
+}
+
+interface DbPipelineWithGraph {
+  id: string;
+  name: string;
+  description: string | null;
+  outputJsonSchema: unknown;
+  createdAt: Date;
+  updatedAt: Date;
+  nodes: DbPipelineNode[];
+  edges: DbPipelineEdge[];
+}
 
 /**
  * Postgres-backed PipelineStore + StepRecorder (Prisma). Faithful port of the
@@ -38,17 +77,40 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
   // ── PipelineStore ─────────────────────────────────────────────────────────
 
   async load(pipelineId: string): Promise<PipelineWithGraph> {
-    const wf = (await this.prisma.pipeline.findUnique({
+    const wf = await this.prisma.pipeline.findUnique<DbPipelineWithGraph>({
       where: { id: pipelineId },
       include: { nodes: { where: { isDeleted: false } }, edges: true },
-    })) as (Record<string, unknown> & { nodes: unknown[]; edges: unknown[] }) | null;
+    });
     if (!wf) throw new Error(`Pipeline not found: ${pipelineId}`);
 
     const { nodes, edges, ...row } = wf;
+    const pipeline: PipelineRow = {
+      id: row.id,
+      name: row.name,
+      description: row.description ?? undefined,
+      outputJsonSchema: row.outputJsonSchema,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
     return {
-      pipeline: row as unknown as PipelineRow,
-      nodes: (nodes as PipelineNodeRow[]).map((n) => ({ ...n, inputs: n.inputs ?? {} })),
-      edges: edges as PipelineEdgeRow[],
+      pipeline,
+      nodes: nodes.map<PipelineNodeRow>((n) => ({
+        id: n.id,
+        pipelineId: n.pipelineId,
+        nodeType: n.nodeType,
+        key: n.key,
+        label: n.label,
+        inputs: (n.inputs ?? {}) as NodeInputs,
+        positionX: n.positionX ?? undefined,
+        positionY: n.positionY ?? undefined,
+      })),
+      edges: edges.map<PipelineEdgeRow>((e) => ({
+        id: e.id,
+        pipelineId: e.pipelineId,
+        fromNodeId: e.fromNodeId,
+        toNodeId: e.toNodeId,
+        label: e.label,
+      })),
     };
   }
 
@@ -59,11 +121,11 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
 
   private async createPipeline(draft: PipelineDraft): Promise<string> {
     return this.prisma.$transaction(async (tx) => {
-      const pipeline = await tx.pipeline.create({
+      const pipeline = await tx.pipeline.create<{ id: string }>({
         data: {
           name: draft.name,
           description: draft.description ?? null,
-          outputJsonSchema: (draft.outputJsonSchema ?? null) as never,
+          outputJsonSchema: draft.outputJsonSchema ?? null,
         },
       });
       const pipelineId = pipeline.id;
@@ -76,7 +138,7 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
             nodeType: n.nodeType,
             key: n.key,
             label: n.label,
-            inputs: n.inputs as never,
+            inputs: n.inputs,
             positionX: n.positionX ?? null,
             positionY: n.positionY ?? null,
           })),
@@ -100,25 +162,27 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
   /** Diff update — no data loss. Update/create draft nodes, soft-delete missing ones, recreate edges. */
   private async updatePipeline(id: string, draft: PipelineDraft): Promise<string> {
     return this.prisma.$transaction(async (tx) => {
-      await tx.pipeline.update({
+      await tx.pipeline.update<{ id: string }>({
         where: { id },
         data: {
           name: draft.name,
           description: draft.description ?? null,
-          outputJsonSchema: (draft.outputJsonSchema ?? null) as never,
+          outputJsonSchema: draft.outputJsonSchema ?? null,
         },
       });
 
       await tx.pipelineEdge.deleteMany({ where: { pipelineId: id } });
 
-      const existing = (await tx.pipelineNode.findMany({
+      const existing = await tx.pipelineNode.findMany<{ id: string; isDeleted: boolean }>({
         where: { pipelineId: id },
         select: { id: true, isDeleted: true },
-      })) as Array<{ id: string; isDeleted: boolean }>;
+      });
       const existingIds = new Set(existing.map((n) => n.id));
       const draftIds = new Set(draft.nodes.map((n) => n.id));
 
-      const toSoftDelete = existing.filter((n) => !draftIds.has(n.id) && !n.isDeleted).map((n) => n.id);
+      const toSoftDelete = existing
+        .filter((n) => !draftIds.has(n.id) && !n.isDeleted)
+        .map((n) => n.id);
       if (toSoftDelete.length > 0) {
         await tx.pipelineNode.updateMany({
           where: { id: { in: toSoftDelete } },
@@ -132,7 +196,7 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
           nodeType: n.nodeType,
           key: n.key,
           label: n.label,
-          inputs: n.inputs as never,
+          inputs: n.inputs,
           positionX: n.positionX ?? null,
           positionY: n.positionY ?? null,
           isDeleted: false,
@@ -161,34 +225,33 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
   }
 
   async createRun(run: RunCreate): Promise<{ runId: string; startedAt: Date }> {
-    const row = await this.prisma.pipelineRun.create({
+    const status: RunStatus = 'RUNNING';
+    const row = await this.prisma.pipelineRun.create<{ id: string; startedAt: Date | null }>({
       data: {
         pipelineId: run.pipelineId,
         userId: run.userId ?? null,
         deliveryMode: run.deliveryMode,
         triggerSource: run.triggerSource ?? 'MANUAL',
-        input: (run.input ?? {}) as never,
-        status: 'RUNNING',
-        cost: ZERO_COST as never,
+        input: run.input ?? {},
+        status,
+        cost: ZERO_COST,
       },
     });
-    return { runId: row.id, startedAt: (row.startedAt as Date) ?? new Date() };
+    return { runId: row.id, startedAt: row.startedAt ?? new Date() };
   }
 
   async completeRun(runId: string, result: RunComplete): Promise<void> {
     const isFailure = result.status === 'FAILED' || result.status === 'ABORTED';
-    await this.prisma.pipelineRun.update({
+    await this.prisma.pipelineRun.update<{ id: string }>({
       where: { id: runId },
       data: {
         status: result.status,
         finishedAt: new Date(),
         ...(result.status === 'SUCCESS' && result.output !== undefined
-          ? { output: result.output as never }
+          ? { output: result.output }
           : {}),
-        ...(isFailure
-          ? { error: (result.error ?? null) as never, lastState: (result.lastState ?? null) as never }
-          : {}),
-        ...(result.cost ? { cost: result.cost as never } : {}),
+        ...(isFailure ? { error: result.error ?? null, lastState: result.lastState ?? null } : {}),
+        ...(result.cost ? { cost: result.cost } : {}),
       },
     });
   }
@@ -212,31 +275,40 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
       delta.tokens.total,
       delta.dollars,
       delta.llmCalls,
-      runId,
+      runId
     );
   }
 
   async listRuns(pipelineId: string, opts?: { limit?: number }): Promise<RunSummary[]> {
-    const rows = (await this.prisma.pipelineRun.findMany({
-      where: { pipelineId },
-      orderBy: { startedAt: 'desc' },
-      ...(opts?.limit ? { take: opts.limit } : {}),
-      select: { id: true, pipelineId: true, status: true, startedAt: true, finishedAt: true, cost: true },
-    })) as Array<{
+    const rows = await this.prisma.pipelineRun.findMany<{
       id: string;
       pipelineId: string;
       status: RunStatus;
       startedAt: Date;
       finishedAt: Date | null;
       cost: unknown;
-    }>;
-    return rows.map((r) => ({
+    }>({
+      where: { pipelineId },
+      orderBy: { startedAt: 'desc' },
+      ...(opts?.limit ? { take: opts.limit } : {}),
+      select: {
+        id: true,
+        pipelineId: true,
+        status: true,
+        startedAt: true,
+        finishedAt: true,
+        cost: true,
+      },
+    });
+    return rows.map<RunSummary>((r) => ({
       id: r.id,
       pipelineId: r.pipelineId,
       status: r.status,
       startedAt: r.startedAt,
       finishedAt: r.finishedAt ?? undefined,
-      cost: (r.cost as CostBundle) ?? mergeCost(undefined, undefined),
+      // `cost` is a non-null JSON column; deserialize the opaque value to its
+      // domain type, falling back to a zero bundle if a legacy row stored null.
+      cost: (r.cost as CostBundle | null) ?? mergeCost(undefined, undefined),
     }));
   }
 
@@ -248,23 +320,26 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
 
   private async startInternal(step: StepStart, parentStepId?: string): Promise<string> {
     return this.prisma.$transaction(async (tx) => {
-      const last = (await tx.pipelineRunStep.findFirst({
+      const last = await tx.pipelineRunStep.findFirst<{ sequenceIndex: number }>({
         where: { runId: step.runId },
         orderBy: { sequenceIndex: 'desc' },
         select: { sequenceIndex: true },
-      })) as { sequenceIndex: number } | null;
+      });
       const nextIndex = (last?.sequenceIndex ?? -1) + 1;
 
-      const created = await tx.pipelineRunStep.create({
+      const status: RunStatus = 'RUNNING';
+      const created = await tx.pipelineRunStep.create<{ id: string }>({
         data: {
           runId: step.runId,
           nodeId: step.nodeId,
-          nodeLabel: step.nodeLabel ?? null,
+          // StepStart.nodeLabel is a required string per the StepRecorder contract;
+          // the DB column is nullable but a value is always supplied here.
+          nodeLabel: step.nodeLabel,
           parentStepId: parentStepId ?? null,
-          status: 'RUNNING',
+          status,
           sequenceIndex: nextIndex,
-          input: {} as never,
-          cost: ZERO_COST as never,
+          input: {},
+          cost: ZERO_COST,
         },
       });
       return created.id;
@@ -272,14 +347,14 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
   }
 
   async finish(stepId: string, result: StepFinish): Promise<void> {
-    await this.prisma.pipelineRunStep.update({
+    await this.prisma.pipelineRunStep.update<{ id: string }>({
       where: { id: stepId },
       data: {
         status: result.status,
-        input: (result.input ?? undefined) as never,
-        output: (result.output ?? null) as never,
-        error: (result.error ?? null) as never,
-        cost: (result.cost ?? ZERO_COST) as never,
+        input: result.input ?? undefined,
+        output: result.output ?? null,
+        error: result.error ?? null,
+        cost: result.cost ?? ZERO_COST,
         finishedAt: new Date(),
       },
     });
@@ -292,7 +367,10 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
     input: unknown;
   }): Promise<string> {
     return this.serializeByRun(params.runId, () =>
-      this.startInternal({ runId: params.runId, nodeId: params.nodeId, nodeLabel: params.nodeId }, params.parentStepId),
+      this.startInternal(
+        { runId: params.runId, nodeId: params.nodeId, nodeLabel: params.nodeId },
+        params.parentStepId
+      )
     );
   }
 

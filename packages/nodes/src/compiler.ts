@@ -6,8 +6,9 @@ import {
   type PipelineWithGraph,
   type CompiledNode,
 } from '@openpipeline/core';
-import { NodeSpecRegistry, type NodeResolveContext } from './registry.js';
+
 import { makeNodeRunner, type NodeRunnerDeps } from './node-runner.js';
+import type { NodeSpecRegistry, NodeResolveContext } from './registry.js';
 
 /** Deps the caller supplies; `nodeMap` is filled internally by the compiler. */
 export type CompilerDeps = Omit<NodeRunnerDeps, 'nodeMap'> & {
@@ -61,14 +62,15 @@ export class PipelineCompiler {
     // MCP-node graphs bypass the cache: an MCP spec depends on user/provider
     // state, so a cache hit could serve a stale spec.
     const hasMcpNode = graph.nodes.some((n) => n.key.startsWith('mcp:'));
-    const cacheKey = `${graph.pipeline.id}:${new Date(graph.pipeline.updatedAt).getTime()}`;
+    const cacheKey = `${graph.pipeline.id}:${String(new Date(graph.pipeline.updatedAt).getTime())}`;
 
     if (!hasMcpNode) {
       const idx = this.cache.findIndex((e) => e.cacheKey === cacheKey);
-      if (idx !== -1) {
-        const [entry] = this.cache.splice(idx, 1);
-        this.cache.unshift(entry!);
-        return entry!.compiled;
+      const entry = idx === -1 ? undefined : this.cache[idx];
+      if (entry) {
+        this.cache.splice(idx, 1);
+        this.cache.unshift(entry);
+        return entry.compiled;
       }
     }
 
@@ -79,8 +81,14 @@ export class PipelineCompiler {
     const topo = analyzeTopology(graph.nodes, graph.edges);
     if (topo.entryNodes.length < 1 || topo.exitNodes.length < 1) {
       throw new PipelineCompileError(
-        [{ scope: 'graph', kind: 'TOPOLOGY_NO_ENTRY', message: 'Expected at least one entry and one exit node' }],
-        graph.pipeline.name,
+        [
+          {
+            scope: 'graph',
+            kind: 'TOPOLOGY_NO_ENTRY',
+            message: 'Expected at least one entry and one exit node',
+          },
+        ],
+        graph.pipeline.name
       );
     }
 
@@ -91,7 +99,10 @@ export class PipelineCompiler {
     // reference the complete map. MCP nodes resolve via the registry's resolver.
     const nodeMap = new Map<string, CompiledNode>();
     const resolved = await Promise.all(
-      graph.nodes.map(async (wfNode) => ({ wfNode, spec: await this.deps.registry.get(wfNode.key, ctx) })),
+      graph.nodes.map(async (wfNode) => ({
+        wfNode,
+        spec: await this.deps.registry.get(wfNode.key, ctx),
+      }))
     );
     for (const { wfNode, spec } of resolved) {
       nodeMap.set(wfNode.id, {
@@ -113,23 +124,30 @@ export class PipelineCompiler {
     };
 
     for (const wfNode of graph.nodes) {
-      const compiledNode = nodeMap.get(wfNode.id)!;
+      const compiledNode = nodeMap.get(wfNode.id);
+      if (!compiledNode) {
+        throw new Error(`[PipelineCompiler] missing resolved node for "${wfNode.id}"`);
+      }
       const runner = makeNodeRunner(wfNode, compiledNode.spec, runnerDeps);
       // Fan-in barrier: in-degree >= 2 nodes are deferred so they run once, after
       // all reachable parents complete (asymmetric fan-in would otherwise double-run).
       // `defer` also skips an unreached IF branch without deadlock.
       const isFanIn = compiledNode.predecessors.length >= 2;
-      stateGraph.addNode(wfNode.id as never, runner as never, isFanIn ? { defer: true } : undefined);
+      stateGraph.addNode(
+        wfNode.id as never,
+        runner as never,
+        isFanIn ? { defer: true } : undefined
+      );
     }
 
     const ifBranches: Record<string, { true?: string; false?: string }> = {};
     for (const wfEdge of graph.edges) {
       const fromNode = nodeMap.get(wfEdge.fromNodeId);
       if (fromNode?.node.nodeType === 'IF') {
-        ifBranches[wfEdge.fromNodeId] ??= {};
+        const branches = (ifBranches[wfEdge.fromNodeId] ??= {});
         const label = wfEdge.label;
         if (label === 'true' || label === 'false') {
-          ifBranches[wfEdge.fromNodeId]![label] = wfEdge.toNodeId;
+          branches[label] = wfEdge.toNodeId;
         }
       } else {
         stateGraph.addEdge(wfEdge.fromNodeId as never, wfEdge.toNodeId as never);
@@ -149,7 +167,7 @@ export class PipelineCompiler {
               message: `IF node "${ifId}" is missing a true/false branch`,
             },
           ],
-          graph.pipeline.name,
+          graph.pipeline.name
         );
       }
       const trueTarget = branches.true;
@@ -163,7 +181,7 @@ export class PipelineCompiler {
           }
           return output.branch as 'true' | 'false';
         },
-        { true: trueTarget as never, false: falseTarget as never },
+        { true: trueTarget as never, false: falseTarget as never }
       );
     }
 
@@ -178,7 +196,7 @@ export class PipelineCompiler {
       app: app as unknown as CompiledPipeline['app'],
       entryNodeIds,
       exitNodeIds,
-      nodeMap: nodeMap as ReadonlyMap<string, CompiledNode>,
+      nodeMap,
     };
 
     if (!hasMcpNode) {

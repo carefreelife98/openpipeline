@@ -6,6 +6,7 @@ dist/
 .env.local
 *.log
 coverage/
+docs/
 packages/store-prisma/src/generated/
 /package/
 

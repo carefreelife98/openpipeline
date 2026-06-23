@@ -1,6 +1,6 @@
 import type { NodeType } from './enums.js';
-import type { NodeInputs } from './value-binding.js';
 import type { NodeSpec } from './node-spec.js';
+import type { NodeInputs } from './value-binding.js';
 
 // Plain graph interfaces replacing the Mate-X Prisma row types. No FK columns,
 // no multi-tenancy (creatorId / companyId / scope / purpose are NOT here).

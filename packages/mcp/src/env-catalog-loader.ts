@@ -1,3 +1,5 @@
+import type { StructuredTool } from '@langchain/core/tools';
+import type { MultiServerMCPClient } from '@langchain/mcp-adapters';
 import {
   NOOP_LOGGER,
   type CatalogLoader,
@@ -6,11 +8,10 @@ import {
   type ResolvedTool,
   type Logger,
 } from '@openpipeline/core';
-import type { MultiServerMCPClient } from '@langchain/mcp-adapters';
-import type { StructuredTool } from '@langchain/core/tools';
-import type { McpServerConfig } from './types.js';
+
 import type { CatalogPolicy, PolicyContext } from './catalog-policy.js';
 import { createClient, getFilteredTools, getRawSchemas } from './client-factory.js';
+import type { McpServerConfig } from './types.js';
 
 export interface EnvCatalogLoaderOptions {
   servers: McpServerConfig[];
@@ -22,7 +23,7 @@ export interface EnvCatalogLoaderOptions {
 /** Unwrap the MCP `tools/call` response, preferring `structuredContent`. */
 function unwrapToolResult(raw: unknown): unknown {
   if (raw && typeof raw === 'object' && 'structuredContent' in raw) {
-    return (raw as { structuredContent: unknown }).structuredContent;
+    return raw.structuredContent;
   }
   return raw;
 }
@@ -50,8 +51,9 @@ export function createEnvCatalogLoader(options: EnvCatalogLoaderOptions): Catalo
 
       for (const server of servers) {
         const token =
-          (options.policy?.resolveToken ? await options.policy.resolveToken(server, policyCtx) : undefined) ??
-          server.accessToken;
+          (options.policy?.resolveToken
+            ? await options.policy.resolveToken(server, policyCtx)
+            : undefined) ?? server.accessToken;
 
         let client: MultiServerMCPClient;
         try {
@@ -75,7 +77,7 @@ export function createEnvCatalogLoader(options: EnvCatalogLoaderOptions): Catalo
           const allowed = await options.policy.filterTools(
             tools.map((t) => ({ name: t.name, description: t.description })),
             server,
-            policyCtx,
+            policyCtx
           );
           const allowSet = new Set(allowed.map((t) => t.name));
           tools = tools.filter((t) => allowSet.has(t.name));
@@ -92,7 +94,9 @@ export function createEnvCatalogLoader(options: EnvCatalogLoaderOptions): Catalo
           invoke: async (input: unknown) => {
             // Surface real validation errors instead of the adapter's generic message.
             (tool as { verboseParsingErrors?: boolean }).verboseParsingErrors = true;
-            const raw = await tool.invoke(input as never);
+            // LangChain's `invoke` is typed to return `any` (ToolOutputType = any);
+            // pin it to `unknown` at this boundary so callers can't treat it unsafely.
+            const raw: unknown = await tool.invoke(input);
             return unwrapToolResult(raw);
           },
         }));
@@ -110,10 +114,10 @@ export function createEnvCatalogLoader(options: EnvCatalogLoaderOptions): Catalo
         cleanup: async () => {
           await Promise.all(
             clients.map((c) =>
-              (c as { close?: () => Promise<void> }).close?.().catch((err) => {
+              c.close().catch((err: unknown) => {
                 logger.warn('[mcp] client cleanup failed', { err });
-              }),
-            ),
+              })
+            )
           );
         },
       };

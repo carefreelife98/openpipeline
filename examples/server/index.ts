@@ -4,17 +4,18 @@
  * deps beyond the OpenPipeline packages.
  */
 import { createServer } from 'node:http';
-import { PipelineEngine } from '@openpipeline/runtime';
-import { createIfNodeSpec } from '@openpipeline/nodes';
-import { MemoryStore } from '@openpipeline/store-memory';
-import { createPipelineHandlers, createNodeHttpHandler } from '@openpipeline/server';
+
 import { defineNode } from '@openpipeline/core';
+import { createIfNodeSpec } from '@openpipeline/nodes';
+import { PipelineEngine } from '@openpipeline/runtime';
+import { createPipelineHandlers, createNodeHttpHandler } from '@openpipeline/server';
+import { MemoryStore } from '@openpipeline/store-memory';
 import { z } from 'zod';
 
 // ── Build an engine ─────────────────────────────────────────────────────────
 const engine = new PipelineEngine({
   store: new MemoryStore(),
-  llmFactory: { createModel: () => ({ invoke: async () => ({ content: '' }) }) },
+  llmFactory: { createModel: () => ({ invoke: () => Promise.resolve({ content: '' }) }) },
 });
 engine.registerNode(createIfNodeSpec());
 engine.registerNode(
@@ -26,16 +27,20 @@ engine.registerNode(
     icon: 'hand',
     inputSchema: z.object({ name: z.string() }),
     outputSchema: z.object({ kind: z.literal('tool.greet'), text: z.string() }),
-    handler: async ({ name }) => ({ kind: 'tool.greet' as const, text: `Hello, ${name}!` }),
-  }),
+    handler: ({ name }) =>
+      Promise.resolve({ kind: 'tool.greet' as const, text: `Hello, ${name}!` }),
+  })
 );
 
 // ── Boot the http server ────────────────────────────────────────────────────
 const handlers = createPipelineHandlers(engine);
 const server = createServer(createNodeHttpHandler(handlers));
 await new Promise<void>((resolve) => server.listen(0, resolve));
-const port = (server.address() as { port: number }).port;
-const base = `http://localhost:${port}/pipeline`;
+const address = server.address();
+if (address === null || typeof address === 'string') {
+  throw new Error('expected the http server to bind to a TCP port');
+}
+const base = `http://localhost:${String(address.port)}/pipeline`;
 console.log(`server listening on ${base}`);
 
 // ── Drive it over the wire ──────────────────────────────────────────────────
@@ -63,7 +68,10 @@ console.log('saved pipelineId:', pipelineId);
 // 2. Stream a run via SSE
 console.log('\n── SSE events ──');
 const streamRes = await fetch(`${base}/runs/x/stream?pipelineId=${pipelineId}`);
-const reader = streamRes.body!.getReader();
+if (streamRes.body === null) {
+  throw new Error('SSE response had no body to stream');
+}
+const reader = streamRes.body.getReader();
 const decoder = new TextDecoder();
 let buf = '';
 for (;;) {

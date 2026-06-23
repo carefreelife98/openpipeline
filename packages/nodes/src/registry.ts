@@ -34,7 +34,7 @@ export class NodeSpecRegistry {
       if (!this.mcpResolver) {
         throw new Error(
           `[NodeSpecRegistry] MCP node "${key}" requires an McpNodeResolver. ` +
-            `Pass one to the registry (see @openpipeline/mcp) or remove MCP nodes from the graph.`,
+            `Pass one to the registry (see @openpipeline/mcp) or remove MCP nodes from the graph.`
         );
       }
       return this.mcpResolver.resolveSpec(key, {

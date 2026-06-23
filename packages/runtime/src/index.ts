@@ -14,7 +14,9 @@ import {
   type RunStatus,
   type PipelineDraft,
   type RunSummary,
-  type PipelineStateType,
+  type PipelineMeta,
+  type NodeMetaMap,
+  type NodeEvent,
   type PipelineOutputs,
   type CostBundle,
   type CatalogResult,
@@ -33,6 +35,38 @@ import {
   type LangGraphStreamEvent,
 } from '@openpipeline/nodes';
 
+/**
+ * Concrete shape of the LangGraph run state. Core exports `PipelineStateType`
+ * as `any` on purpose — it is `typeof PipelineStateAnnotation.State`, and the
+ * annotation is typed `any` to keep LangGraph's internal generics off the
+ * public `.d.ts` surface. That shield is correct at the package boundary, but
+ * inside the engine we know the exact shape (it mirrors the annotation in
+ * core/state.ts), so we reconstruct it from the concrete building-block types
+ * core does export. This gives us real type-safety for state reads/writes
+ * without weakening anything to `any`.
+ */
+interface PipelineState {
+  meta: PipelineMeta;
+  outputs: PipelineOutputs;
+  nodeMeta: NodeMetaMap;
+  cost: CostBundle;
+  events: NodeEvent[];
+}
+
+/**
+ * Extract the top-level graph state from a LangGraph `on_chain_end` event's
+ * `data.output` (typed `unknown` upstream). Validates the discriminating
+ * `outputs` field is present before treating the payload as a `PipelineState`,
+ * so the narrowing is a real runtime guard rather than a blind cast. Declared
+ * once as the single typed access point into the langgraph `unknown` payload.
+ */
+function readFinalState(output: unknown): PipelineState | undefined {
+  if (output !== null && typeof output === 'object' && 'outputs' in output) {
+    return output as PipelineState;
+  }
+  return undefined;
+}
+
 export interface PipelineEngineOptions {
   store: PipelineStore & StepRecorder;
   llmFactory: LlmFactory;
@@ -44,7 +78,10 @@ export interface PipelineEngineOptions {
   /** Optional — resolves `mcp:` node keys to specs. Provide with catalogLoader. */
   mcpNodeResolver?: McpNodeResolver;
   /** Optional graph validator run before compilation. Throw to reject. */
-  validate?: (graph: PipelineWithGraph, ctx: { userId?: string; tenantId?: string }) => Promise<void> | void;
+  validate?: (
+    graph: PipelineWithGraph,
+    ctx: { userId?: string; tenantId?: string }
+  ) => Promise<void> | void;
   /** Hard per-run wall-clock timeout. Default 600_000ms. */
   runTimeoutMs?: number;
 }
@@ -179,7 +216,14 @@ export class PipelineEngine {
     this.inFlight.set(runId, controller);
     if (opts.signal) {
       if (opts.signal.aborted) controller.abort();
-      else opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
+      else
+        opts.signal.addEventListener(
+          'abort',
+          () => {
+            controller.abort();
+          },
+          { once: true }
+        );
     }
 
     const done = this.execute(graph, runId, deliveryMode, opts.context, controller).finally(() => {
@@ -196,18 +240,23 @@ export class PipelineEngine {
     runId: string,
     deliveryMode: RunDeliveryMode,
     context: RunContext | undefined,
-    controller: AbortController,
+    controller: AbortController
   ): Promise<RunResult> {
     const hasMcpNode = graph.nodes.some((n) => n.key.startsWith('mcp:'));
     let mcpCatalog: CatalogResult | undefined;
-    const timer = setTimeout(() => controller.abort(), this.runTimeoutMs);
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, this.runTimeoutMs);
 
     try {
       if (hasMcpNode) {
         if (!this.catalogLoader) {
           throw new Error('Graph has MCP nodes but no catalogLoader was configured.');
         }
-        mcpCatalog = await this.catalogLoader.load({ userId: context?.userId, tenantId: context?.tenantId });
+        mcpCatalog = await this.catalogLoader.load({
+          userId: context?.userId,
+          tenantId: context?.tenantId,
+        });
       }
 
       const mcpCatalogCache = mcpCatalog?.providers as readonly unknown[] | undefined;
@@ -220,11 +269,11 @@ export class PipelineEngine {
 
       const compiled = await this.compiler.compile(graph);
 
-      const initialState: PipelineStateType = {
+      const initialState: PipelineState = {
         meta: {
           runId,
           pipelineId: graph.pipeline.id,
-          pipelineName: graph.pipeline.name ?? '',
+          pipelineName: graph.pipeline.name,
           pipelineDescription: graph.pipeline.description ?? '',
           deliveryMode,
           context,
@@ -240,7 +289,7 @@ export class PipelineEngine {
 
       // streamEvents drives live per-node events; we accumulate the final state
       // from the top-level on_chain_end so we still get outputs + cost.
-      let final: PipelineStateType | undefined;
+      let final: PipelineState | undefined;
       const stream = compiled.app.streamEvents(initialState, {
         version: 'v2',
         configurable: { signal: controller.signal },
@@ -254,15 +303,19 @@ export class PipelineEngine {
         if (translated) this.emit(runId, translated);
         // Capture the top-level graph output (no langgraph_node metadata).
         if (evt.event === 'on_chain_end' && !evt.metadata?.langgraph_node) {
-          const out = (evt.data as { output?: PipelineStateType })?.output;
-          if (out && typeof out === 'object' && 'outputs' in out) final = out;
+          final = readFinalState(evt.data?.output) ?? final;
         }
       }
 
       const outputs = final?.outputs ?? {};
       const cost = final?.cost ?? ZERO_COST;
 
-      await this.store.completeRun(runId, { status: 'SUCCESS', output: outputs, cost, lastState: final });
+      await this.store.completeRun(runId, {
+        status: 'SUCCESS',
+        output: outputs,
+        cost,
+        lastState: final,
+      });
       this.emit(runId, { kind: 'RUN_COMPLETE', status: 'SUCCESS' });
       return { runId, status: 'SUCCESS', outputs, cost };
     } catch (err) {

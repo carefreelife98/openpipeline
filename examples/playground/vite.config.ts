@@ -1,5 +1,6 @@
-import { defineConfig, type Connect } from 'vite';
 import react from '@vitejs/plugin-react';
+import { defineConfig, type Connect } from 'vite';
+
 import { createBackend } from './backend.js';
 
 /**
@@ -24,7 +25,7 @@ function openpipelineApi() {
           return;
         }
         if (url.startsWith('/pipeline')) {
-          httpHandler(req as never, res as never);
+          httpHandler(req, res);
           return;
         }
         next();

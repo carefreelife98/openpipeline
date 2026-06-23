@@ -5,7 +5,17 @@ import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyf
  * data (`onDelete`) so the canvas wires it to the store.
  */
 export function DeletableEdge(props: EdgeProps): React.JSX.Element {
-  const { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style, markerEnd } = props;
+  const {
+    id,
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+    style,
+    markerEnd,
+  } = props;
   const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,
@@ -16,6 +26,7 @@ export function DeletableEdge(props: EdgeProps): React.JSX.Element {
   });
   const data = props.data as { label?: string | null; onDelete?: (id: string) => void } | undefined;
   const branchLabel = data?.label === 'true' || data?.label === 'false' ? data.label : null;
+  const onDelete = data?.onDelete;
 
   return (
     <>
@@ -24,7 +35,7 @@ export function DeletableEdge(props: EdgeProps): React.JSX.Element {
         <div
           style={{
             position: 'absolute',
-            transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+            transform: `translate(-50%, -50%) translate(${String(labelX)}px, ${String(labelY)}px)`,
             pointerEvents: 'all',
             display: 'flex',
             gap: 4,
@@ -47,9 +58,11 @@ export function DeletableEdge(props: EdgeProps): React.JSX.Element {
               {branchLabel}
             </span>
           )}
-          {data?.onDelete && (
+          {onDelete && (
             <button
-              onClick={() => data.onDelete!(id)}
+              onClick={() => {
+                onDelete(id);
+              }}
               title="Delete"
               style={{
                 width: 16,

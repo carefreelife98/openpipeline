@@ -2,7 +2,9 @@
 // START/END markers are display-only — never stored in state or persisted.
 // Faithful port; the only change is local types and English marker labels.
 import type { Node as RfNode, Edge as RfEdge } from '@xyflow/react';
+
 import type { BuilderNode, BuilderEdge } from '../types.js';
+
 import {
   START_MARKER_ID,
   END_MARKER_ID,
@@ -16,7 +18,7 @@ export function buildDisplayNodes(
   stateNodes: BuilderNode[],
   startMarker: { x: number; y: number } | null = null,
   endMarker: { x: number; y: number } | null = null,
-  labels: { start: string; end: string } = { start: 'Start', end: 'End' },
+  labels: { start: string; end: string } = { start: 'Start', end: 'End' }
 ): RfNode[] {
   const startMarkerNode: RfNode = {
     id: START_MARKER_ID,
@@ -59,11 +61,11 @@ export function mergeDisplayNodes(prev: RfNode[], fresh: RfNode[]): RfNode[] {
 export function buildDisplayEdges(
   stateEdges: BuilderEdge[],
   startTargets: string[],
-  endSources: string[],
+  endSources: string[]
 ): RfEdge[] {
   const result: RfEdge[] = stateEdges.map((e) => {
-    const isIfBranch = e.label === 'true' || e.label === 'false';
-    const sourceHandle = isIfBranch ? `branch-${e.label}` : undefined;
+    const sourceHandle =
+      e.label === 'true' || e.label === 'false' ? `branch-${e.label}` : undefined;
     return {
       id: e.id,
       source: e.fromNodeId,

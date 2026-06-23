@@ -1,8 +1,8 @@
-import type { RunDeliveryMode, RunStatus, RunStepStatus } from './enums.js';
 import type { CostBundle } from './cost.js';
-import type { PipelineError } from './state.js';
-import type { PipelineWithGraph, PipelineRow, PipelineNodeRow, PipelineEdgeRow } from './graph.js';
+import type { RunDeliveryMode, RunStatus, RunStepStatus } from './enums.js';
+import type { PipelineWithGraph, PipelineNodeRow, PipelineEdgeRow } from './graph.js';
 import type { NodeSpec, Logger } from './node-spec.js';
+import type { PipelineError } from './state.js';
 
 // The inversion layer. These interfaces are what the engine depends on instead
 // of NestJS DI + Prisma. A host provides implementations; reference adapters
@@ -113,7 +113,12 @@ export interface StepFinish {
 export interface StepRecorder {
   start(step: StepStart): Promise<string>;
   finish(stepId: string, result: StepFinish): Promise<void>;
-  startChild(params: { runId: string; parentStepId: string; nodeId: string; input: unknown }): Promise<string>;
+  startChild(params: {
+    runId: string;
+    parentStepId: string;
+    nodeId: string;
+    input: unknown;
+  }): Promise<string>;
   finishChild(childStepId: string, result: StepFinish): Promise<void>;
   /** Mark any still-RUNNING steps of a run as FAILED (crash recovery). */
   finalizeStaleSteps(runId: string): Promise<void>;
@@ -164,7 +169,6 @@ export interface CatalogLoader {
 export interface McpNodeResolver {
   resolveSpec(
     key: string,
-    ctx: { userId?: string; tenantId?: string; mcpCatalogCache?: readonly unknown[] },
+    ctx: { userId?: string; tenantId?: string; mcpCatalogCache?: readonly unknown[] }
   ): Promise<NodeSpec>;
 }
-

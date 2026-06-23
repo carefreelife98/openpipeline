@@ -1,7 +1,8 @@
 import type { z } from 'zod';
+
+import type { CostBundle } from './cost.js';
 import type { NodeType, RunDeliveryMode } from './enums.js';
 import type { PipelineNodeOutput } from './node-output.js';
-import type { CostBundle } from './cost.js';
 import type { NodeEvent, RunContext } from './state.js';
 
 // ── Child step ─────────────────────────────────────────────────────────────────
@@ -71,7 +72,7 @@ export interface Logger {
 
 export type NodeHandler<TInput, TOutput extends PipelineNodeOutput> = (
   input: TInput,
-  ctx: NodeExecutionContext,
+  ctx: NodeExecutionContext
 ) => Promise<TOutput>;
 
 /**
@@ -79,7 +80,10 @@ export type NodeHandler<TInput, TOutput extends PipelineNodeOutput> = (
  * framework coupling. This is the public plugin API: author a node with
  * {@link defineNode} and register it with the engine.
  */
-export interface NodeSpec<TInput = unknown, TOutput extends PipelineNodeOutput = PipelineNodeOutput> {
+export interface NodeSpec<
+  TInput = unknown,
+  TOutput extends PipelineNodeOutput = PipelineNodeOutput,
+> {
   /** Unique key. Built-ins use dotted names (`control.if`); MCP uses `mcp:<provider>:<tool>`. */
   key: string;
   nodeType: NodeType;
@@ -102,7 +106,7 @@ export interface NodeSpec<TInput = unknown, TOutput extends PipelineNodeOutput =
  * on `handler` from the input/output schemas.
  */
 export function defineNode<TInput, TOutput extends PipelineNodeOutput>(
-  spec: NodeSpec<TInput, TOutput>,
+  spec: NodeSpec<TInput, TOutput>
 ): NodeSpec<TInput, TOutput> {
   return spec;
 }

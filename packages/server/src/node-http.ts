@@ -1,5 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+
 import type { PipelineDraft } from '@openpipeline/core';
+
 import type { PipelineHandlers } from './handlers.js';
 import { sseFrame, SSE_HEADERS } from './sse.js';
 
@@ -19,12 +21,12 @@ import { sseFrame, SSE_HEADERS } from './sse.js';
  */
 export function createNodeHttpHandler(
   handlers: PipelineHandlers,
-  opts: { basePath?: string } = {},
+  opts: { basePath?: string } = {}
 ): (req: IncomingMessage, res: ServerResponse) => void {
   const base = opts.basePath ?? '/pipeline';
 
   return (req, res) => {
-    void handle(req, res).catch((err) => {
+    void handle(req, res).catch((err: unknown) => {
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
       }
@@ -60,9 +62,12 @@ export function createNodeHttpHandler(
     // POST /pipeline/run/:runId/abort
     const abortMatch = rest.match(/^\/run\/([^/]+)\/abort$/);
     if (method === 'POST' && abortMatch) {
-      handlers.abortRun(abortMatch[1]!);
-      json(res, 200, { ok: true });
-      return;
+      const [, runId] = abortMatch;
+      if (runId !== undefined) {
+        handlers.abortRun(runId);
+        json(res, 200, { ok: true });
+        return;
+      }
     }
 
     // GET /pipeline/runs/:runId/stream  (SSE)
@@ -84,16 +89,26 @@ export function createNodeHttpHandler(
     // GET /pipeline/:id/runs
     const runsMatch = rest.match(/^\/([^/]+)\/runs$/);
     if (method === 'GET' && runsMatch) {
-      const limit = url.searchParams.get('limit');
-      json(res, 200, await handlers.listRuns(runsMatch[1]!, limit ? { limit: Number(limit) } : undefined));
-      return;
+      const [, pipelineId] = runsMatch;
+      if (pipelineId !== undefined) {
+        const limit = url.searchParams.get('limit');
+        json(
+          res,
+          200,
+          await handlers.listRuns(pipelineId, limit ? { limit: Number(limit) } : undefined)
+        );
+        return;
+      }
     }
 
     // GET /pipeline/:id
     const getMatch = rest.match(/^\/([^/]+)$/);
     if (method === 'GET' && getMatch) {
-      json(res, 200, await handlers.getPipeline(getMatch[1]!));
-      return;
+      const [, pipelineId] = getMatch;
+      if (pipelineId !== undefined) {
+        json(res, 200, await handlers.getPipeline(pipelineId));
+        return;
+      }
     }
 
     json(res, 404, { error: 'not found' });

@@ -18,15 +18,15 @@
  * MOCK CatalogLoader that satisfies the same interface. The engine → resolver →
  * tool.invoke path is exactly the same as with a real server.
  */
+import type { CatalogLoader } from '@openpipeline/core';
+import { McpNodeResolverImpl } from '@openpipeline/mcp';
 import { PipelineEngine } from '@openpipeline/runtime';
 import { MemoryStore } from '@openpipeline/store-memory';
-import { McpNodeResolverImpl } from '@openpipeline/mcp';
-import type { CatalogLoader } from '@openpipeline/core';
 
 // A mock CatalogLoader exposing one "weather" provider with one tool.
 const mockCatalogLoader: CatalogLoader = {
-  async load() {
-    return {
+  load() {
+    return Promise.resolve({
       providers: [
         {
           key: 'weather',
@@ -42,25 +42,29 @@ const mockCatalogLoader: CatalogLoader = {
               },
               outputSchema: {
                 type: 'object',
-                properties: { city: { type: 'string' }, summary: { type: 'string' }, tempC: { type: 'number' } },
+                properties: {
+                  city: { type: 'string' },
+                  summary: { type: 'string' },
+                  tempC: { type: 'number' },
+                },
                 required: ['city', 'summary', 'tempC'],
               },
-              invoke: async (input: unknown) => {
+              invoke: (input: unknown) => {
                 const { city } = input as { city: string };
-                return { city, summary: 'Sunny', tempC: 24 };
+                return Promise.resolve({ city, summary: 'Sunny', tempC: 24 });
               },
             },
           ],
         },
       ],
-      cleanup: async () => {},
-    };
+      cleanup: () => Promise.resolve(),
+    });
   },
 };
 
 const engine = new PipelineEngine({
   store: new MemoryStore(),
-  llmFactory: { createModel: () => ({ invoke: async () => ({ content: '' }) }) },
+  llmFactory: { createModel: () => ({ invoke: () => Promise.resolve({ content: '' }) }) },
   catalogLoader: mockCatalogLoader,
   mcpNodeResolver: new McpNodeResolverImpl(console),
   logger: console,

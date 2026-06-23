@@ -1,0 +1,25 @@
+// Type-aware ESLint needs every linted file in a TS program. The per-package
+// build tsconfigs only include `src/**` (and exclude `*.test.ts` so tests never
+// ship in dist). This config is for ESLint ONLY — it widens the program to also
+// cover test files and the root tooling configs so strictTypeChecked can lint
+// them. It never emits.
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true,
+    "types": ["node"]
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/src/**/*.tsx",
+    "packages/*/test/**/*.ts",
+    "examples/**/*.ts",
+    "examples/**/*.tsx",
+    "*.config.ts",
+    "*.config.js",
+    "eslint.config.js",
+    "vitest.config.ts"
+  ],
+  "exclude": ["**/dist/**", "**/node_modules/**", "packages/store-prisma/src/generated/**"]
+}
