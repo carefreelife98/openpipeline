@@ -21,3 +21,6 @@ pnpm-debug.log*
 # Private session-context docs (not for public OSS repo)
 /CLAUDE.md
 /PRODUCT.md
+
+# npm pack tarballs (build artifacts)
+*.tgz
