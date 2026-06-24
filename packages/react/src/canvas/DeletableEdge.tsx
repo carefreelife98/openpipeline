@@ -1,5 +1,7 @@
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyflow/react';
 
+import { branchLabelOf } from '../lib/edge-label.js';
+
 /**
  * Edge with a hover delete affordance. The delete handler is supplied via edge
  * data (`onDelete`) so the canvas wires it to the store.
@@ -25,7 +27,7 @@ export function DeletableEdge(props: EdgeProps): React.JSX.Element {
     targetPosition,
   });
   const data = props.data as { label?: string | null; onDelete?: (id: string) => void } | undefined;
-  const branchLabel = data?.label === 'true' || data?.label === 'false' ? data.label : null;
+  const branchLabel = branchLabelOf(data?.label);
   const onDelete = data?.onDelete;
 
   return (
