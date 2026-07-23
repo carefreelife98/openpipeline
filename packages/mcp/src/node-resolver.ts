@@ -104,6 +104,8 @@ export class McpNodeResolverImpl implements McpNodeResolver {
       iconUrl: provider.iconUrl,
     };
 
+    // Captured once at spec-build time so the handler validates against the
+    // exact schema advertised on this NodeSpec (Mate-X H3 semantics).
     const outputSchema = this.synthesizeOutputSchema(provider, tool);
 
     const spec: NodeSpec<unknown, McpToolNodeOutput> = {
@@ -122,7 +124,22 @@ export class McpNodeResolverImpl implements McpNodeResolver {
 
         ctx.logger.debug(`[mcp] invoke ${provider.key}/${tool.name}`);
         const output = await runTool.invoke(input);
-        return { kind: 'mcp_tool', providerKey: provider.key, toolName: tool.name, output };
+        const wrapped: McpToolNodeOutput = {
+          kind: 'mcp_tool',
+          providerKey: provider.key,
+          toolName: tool.name,
+          output,
+        };
+        const parsed = outputSchema.safeParse(wrapped);
+        if (!parsed.success) {
+          // Provider contract violation — surface loudly instead of an opaque
+          // ZodError from the runner's outputSchema.parse (Mate-X H3 semantics).
+          throw new Error(
+            `MCP_OUTPUT_SCHEMA_MISMATCH: tool "${provider.key}/${tool.name}" returned output that does not ` +
+              `match its declared output schema (provider contract violation). ${parsed.error.message.slice(0, 1500)}`
+          );
+        }
+        return parsed.data;
       },
       meta: { mcp: meta },
     };
