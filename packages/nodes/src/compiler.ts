@@ -15,7 +15,6 @@ export type CompilerDeps = Omit<NodeRunnerDeps, 'nodeMap'> & {
   registry: NodeSpecRegistry;
   /** Optional graph validator. Throw or return errors to reject compilation. */
   validate?: (graph: PipelineWithGraph, ctx: NodeResolveContext) => Promise<void> | void;
-  resolveContext?: NodeResolveContext;
 };
 
 export interface CompiledPipeline {
@@ -45,20 +44,15 @@ export class PipelineCompiler {
   private readonly cache: CacheEntry[] = [];
   private readonly CAPACITY = 10;
 
-  private resolveContext: NodeResolveContext;
+  constructor(private readonly deps: CompilerDeps) {}
 
-  constructor(private readonly deps: CompilerDeps) {
-    this.resolveContext = deps.resolveContext ?? {};
-  }
-
-  /** Set the per-run resolve context (userId/tenantId/mcpCatalogCache) before compiling. */
-  setResolveContext(ctx: NodeResolveContext): void {
-    this.resolveContext = ctx;
-  }
-
-  async compile(graph: PipelineWithGraph): Promise<CompiledPipeline> {
-    const ctx: NodeResolveContext = this.resolveContext;
-
+  /**
+   * Compile a pipeline graph. `ctx` (userId/tenantId/mcpCatalogCache) is a
+   * per-call parameter, not shared mutable state — concurrent `compile()`
+   * calls (e.g. two users running different MCP-enabled pipelines at once)
+   * each see only their own `ctx` (#E5 — was a shared-field race before).
+   */
+  async compile(graph: PipelineWithGraph, ctx: NodeResolveContext = {}): Promise<CompiledPipeline> {
     // MCP-node graphs bypass the cache: an MCP spec depends on user/provider
     // state, so a cache hit could serve a stale spec.
     const hasMcpNode = graph.nodes.some((n) => n.key.startsWith('mcp:'));

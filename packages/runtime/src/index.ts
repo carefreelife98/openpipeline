@@ -262,13 +262,15 @@ export class PipelineEngine {
 
       const mcpCatalogCache = mcpCatalog?.providers as readonly unknown[] | undefined;
 
-      this.compiler.setResolveContext({
+      // Passed per-call (not stashed as shared mutable state on the compiler)
+      // so concurrent runs never leak each other's userId/tenantId/catalog (#E5).
+      const resolveCtx = {
         userId: context?.userId,
         tenantId: context?.tenantId,
         mcpCatalogCache,
-      });
+      };
 
-      const compiled = await this.compiler.compile(graph);
+      const compiled = await this.compiler.compile(graph, resolveCtx);
 
       const initialState: PipelineState = {
         meta: {
