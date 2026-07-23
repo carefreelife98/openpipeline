@@ -85,3 +85,79 @@ describe('McpNodeResolverImpl — declared output schema validation', () => {
     });
   });
 });
+
+describe('McpNodeResolverImpl — transport error retry (#S7/H2)', () => {
+  it('retries once on a retryable transport error and succeeds', async () => {
+    const invoke = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('MCP error -32000: Connection closed'))
+      .mockResolvedValueOnce({ ok: true });
+    const tool: ResolvedTool = {
+      name: 'tool',
+      inputSchema: { type: 'object' },
+      invoke,
+    };
+    const provider: ResolvedProvider = { key: 'prov', displayName: 'Prov', tools: [tool] };
+
+    const resolver = new McpNodeResolverImpl();
+    const spec = (await resolver.resolveSpec('mcp:prov:tool', {
+      mcpCatalogCache: [provider],
+    })) as NodeSpec<unknown, never>;
+
+    const warn = vi.fn();
+    const ctx = makeExecutionContext({
+      mcpCatalogCache: [provider],
+      logger: { ...NOOP_LOGGER, warn },
+    });
+
+    const result = await spec.handler({}, ctx);
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({
+      kind: 'mcp_tool',
+      providerKey: 'prov',
+      toolName: 'tool',
+      output: { ok: true },
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('retrying once'));
+  });
+
+  it('does not retry a non-retryable error and rejects immediately', async () => {
+    const invoke = vi.fn().mockRejectedValue(new Error('MCP error -32602: Invalid params'));
+    const tool: ResolvedTool = {
+      name: 'tool',
+      inputSchema: { type: 'object' },
+      invoke,
+    };
+    const provider: ResolvedProvider = { key: 'prov', displayName: 'Prov', tools: [tool] };
+
+    const resolver = new McpNodeResolverImpl();
+    const spec = (await resolver.resolveSpec('mcp:prov:tool', {
+      mcpCatalogCache: [provider],
+    })) as NodeSpec<unknown, never>;
+
+    const ctx = makeExecutionContext({ mcpCatalogCache: [provider] });
+
+    await expect(spec.handler({}, ctx)).rejects.toThrow(/Invalid params/);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces the retried call error if it fails again too', async () => {
+    const invoke = vi.fn().mockRejectedValue(new Error('MCP error -32000: Connection closed'));
+    const tool: ResolvedTool = {
+      name: 'tool',
+      inputSchema: { type: 'object' },
+      invoke,
+    };
+    const provider: ResolvedProvider = { key: 'prov', displayName: 'Prov', tools: [tool] };
+
+    const resolver = new McpNodeResolverImpl();
+    const spec = (await resolver.resolveSpec('mcp:prov:tool', {
+      mcpCatalogCache: [provider],
+    })) as NodeSpec<unknown, never>;
+
+    const ctx = makeExecutionContext({ mcpCatalogCache: [provider] });
+
+    await expect(spec.handler({}, ctx)).rejects.toThrow(/Connection closed/);
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+});

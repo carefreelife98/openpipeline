@@ -13,6 +13,7 @@ import {
 import { z } from 'zod';
 
 import { McpSchemaConverter } from './schema-converter.js';
+import { isRetryableMcpTransportError } from './transport-error.js';
 
 export interface ParsedMcpKey {
   providerKey: string;
@@ -123,7 +124,16 @@ export class McpNodeResolverImpl implements McpNodeResolver {
         const runTool = runProvider?.tools.find((t) => t.name === tool.name) ?? tool;
 
         ctx.logger.debug(`[mcp] invoke ${provider.key}/${tool.name}`);
-        const output = await runTool.invoke(input);
+        let output: unknown;
+        try {
+          output = await runTool.invoke(input);
+        } catch (err) {
+          if (!isRetryableMcpTransportError(err)) throw err;
+          ctx.logger.warn(
+            `[mcp] transient transport error on ${provider.key}/${tool.name} — retrying once`
+          );
+          output = await runTool.invoke(input);
+        }
         const wrapped: McpToolNodeOutput = {
           kind: 'mcp_tool',
           providerKey: provider.key,
