@@ -173,7 +173,7 @@ describe('MemoryStore.completeRun', () => {
   });
 
   it('is a silent no-op for an unknown runId (no throw)', async () => {
-    await expect(store.completeRun('ghost', { status: 'FAILED' })).resolves.toBeUndefined();
+    await expect(store.completeRun('ghost', { status: 'FAILED' })).resolves.toBe(false);
     // Nothing was created as a side effect.
     expect(await store.listRuns('p')).toEqual([]);
   });
@@ -185,6 +185,22 @@ describe('MemoryStore.completeRun', () => {
 
     const [summary] = await store.listRuns('p');
     expect(summary?.cost).toEqual(cost(3, 2, 0.5, 1));
+  });
+});
+
+describe('completeRun first-terminal-wins', () => {
+  it('returns true on first terminal transition, false and no-op on second', async () => {
+    const store = new MemoryStore();
+    const id = await store.save({ name: 'p', nodes: [], edges: [] });
+    const { runId } = await store.createRun({ pipelineId: id, deliveryMode: 'INVOKE' });
+
+    const first = await store.completeRun(runId, { status: 'SUCCESS', output: { a: 1 } });
+    const second = await store.completeRun(runId, { status: 'FAILED' });
+
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+    const runs = await store.listRuns(id);
+    expect(runs[0]?.status).toBe('SUCCESS'); // FAILED로 역전되지 않음
   });
 });
 

@@ -3,6 +3,7 @@ import {
   NOOP_LOGGER,
   RUN_DELIVERY_MODE,
   PipelineAbortedError,
+  safeJson,
   type PipelineStore,
   type StepRecorder,
   type LlmFactory,
@@ -309,12 +310,17 @@ export class PipelineEngine {
 
       const outputs = final?.outputs ?? {};
       const cost = final?.cost ?? ZERO_COST;
+      if (!final) {
+        this.logger.warn(
+          `[PipelineEngine] run ${runId}: no top-level final state captured — completing SUCCESS with empty outputs`
+        );
+      }
 
       await this.store.completeRun(runId, {
         status: 'SUCCESS',
-        output: outputs,
+        output: safeJson(outputs),
         cost,
-        lastState: final,
+        lastState: safeJson(final),
       });
       this.emit(runId, { kind: 'RUN_COMPLETE', status: 'SUCCESS' });
       return { runId, status: 'SUCCESS', outputs, cost };
@@ -324,11 +330,23 @@ export class PipelineEngine {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`[PipelineEngine] run ${status}: ${message}`);
 
-      await this.store.finalizeStaleSteps(runId);
-      await this.store.completeRun(runId, {
-        status,
-        error: { kind: aborted ? 'ABORTED' : 'RUNTIME', code: 'RUN', message },
-      });
+      // E2 — `done` must never reject because the store failed on the way out
+      // (crash-recovery finalize + terminal write are individually guarded).
+      try {
+        await this.store.finalizeStaleSteps(runId);
+      } catch (storeErr) {
+        this.logger.error(
+          `[PipelineEngine] finalizeStaleSteps failed for ${runId}: ${String(storeErr)}`
+        );
+      }
+      try {
+        await this.store.completeRun(runId, {
+          status,
+          error: { kind: aborted ? 'ABORTED' : 'RUNTIME', code: 'RUN', message },
+        });
+      } catch (storeErr) {
+        this.logger.error(`[PipelineEngine] completeRun failed for ${runId}: ${String(storeErr)}`);
+      }
       this.emit(runId, { kind: 'RUN_COMPLETE', status });
       return {
         runId,

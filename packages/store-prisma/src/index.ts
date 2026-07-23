@@ -240,10 +240,16 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
     return { runId: row.id, startedAt: row.startedAt ?? new Date() };
   }
 
-  async completeRun(runId: string, result: RunComplete): Promise<void> {
+  /**
+   * Terminal transition. First-terminal-wins: the `where.status: 'RUNNING'`
+   * guard means only the call that observes the run still RUNNING performs the
+   * write — a second completeRun (double-complete) is a no-op, so a completed
+   * SUCCESS can never be overwritten by a later FAILED (S1/K5).
+   */
+  async completeRun(runId: string, result: RunComplete): Promise<boolean> {
     const isFailure = result.status === 'FAILED' || result.status === 'ABORTED';
-    await this.prisma.pipelineRun.update<{ id: string }>({
-      where: { id: runId },
+    const res = await this.prisma.pipelineRun.updateMany({
+      where: { id: runId, status: 'RUNNING' },
       data: {
         status: result.status,
         finishedAt: new Date(),
@@ -254,6 +260,7 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
         ...(result.cost ? { cost: result.cost } : {}),
       },
     });
+    return res.count > 0;
   }
 
   /** Atomic cost increment via parameterized raw SQL — race-free read-modify-write. */

@@ -79,7 +79,12 @@ export interface PipelineStore {
   load(pipelineId: string): Promise<PipelineWithGraph>;
   save(draft: PipelineDraft): Promise<string>;
   createRun(run: RunCreate): Promise<{ runId: string; startedAt: Date }>;
-  completeRun(runId: string, result: RunComplete): Promise<void>;
+  /**
+   * Terminal transition. First-terminal-wins: returns true iff THIS call moved
+   * the run RUNNING→terminal. A second call is a no-op returning false —
+   * a completed status is never overwritten (SUCCESS can't flip to FAILED).
+   */
+  completeRun(runId: string, result: RunComplete): Promise<boolean>;
   /**
    * Atomically add a cost delta to a run. Separated so non-Postgres backends
    * can implement it however they like (the Prisma adapter uses a jsonb update).

@@ -122,14 +122,15 @@ export class MemoryStore implements PipelineStore, StepRecorder {
     return Promise.resolve({ runId, startedAt });
   }
 
-  completeRun(runId: string, result: RunComplete): Promise<void> {
+  completeRun(runId: string, result: RunComplete): Promise<boolean> {
     const run = this.runs.get(runId);
-    if (!run) return Promise.resolve();
+    if (!run || run.status !== 'RUNNING') return Promise.resolve(false);
     run.status = result.status;
     run.output = result.output;
     run.finishedAt = new Date();
     if (result.cost) run.cost = mergeCost(run.cost, result.cost);
-    return Promise.resolve();
+    this.seqByRun.delete(runId); // Task 7 S5와 중복돼도 무해(멱등)
+    return Promise.resolve(true);
   }
 
   updateRunCostAtomic(runId: string, delta: CostBundle): Promise<void> {

@@ -700,6 +700,30 @@ describe('PrismaPipelineStore.createRun / completeRun', () => {
   });
 });
 
+describe('PrismaPipelineStore.completeRun first-terminal-wins', () => {
+  it('returns true on first terminal transition, false and no-op on second', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+    const { runId } = await store.createRun({ pipelineId: 'p1', deliveryMode: STREAM });
+
+    const first = await store.completeRun(runId, { status: 'SUCCESS', output: { a: 1 } });
+    const second = await store.completeRun(runId, { status: 'FAILED' });
+
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+    // FAILED로 역전되지 않음 — the guarded updateMany's where.status filter
+    // rejects the second write once the run is already terminal.
+    expect(fake.tables.pipelineRun.get(runId)?.status).toBe('SUCCESS');
+  });
+
+  it('is a no-op (returns false) for an unknown runId', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+
+    await expect(store.completeRun('ghost', { status: 'FAILED' })).resolves.toBe(false);
+  });
+});
+
 describe('PrismaPipelineStore.updateRunCostAtomic', () => {
   const delta = (over: Partial<CostBundle> = {}): CostBundle => ({
     tokens: { input: 1, output: 2, total: 3 },

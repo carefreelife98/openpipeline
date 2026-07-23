@@ -73,6 +73,11 @@ export function makeNodeRunner(
     const events: NodeEvent[] = [
       { nodeId: node.id, eventKind: 'NODE_START', timestamp: startedAt, payload: null },
     ];
+    // Hoisted OUTSIDE the try block (not `const` inside it) so a handler that
+    // reports cost and then throws still has that spend visible to the catch's
+    // FAILED finish() below — a failed node's already-consumed resolver/handler
+    // cost must not be silently dropped (#24).
+    const costAcc = createCostAccumulator();
 
     try {
       checkAbort(signal);
@@ -89,7 +94,6 @@ export function makeNodeRunner(
         .filter(([, b]) => b.kind === 'auto')
         .map(([n]) => n);
 
-      const costAcc = createCostAccumulator();
       let resolved: Record<string, unknown> = explicit;
 
       if (autoSlots.length > 0) {
@@ -159,7 +163,11 @@ export function makeNodeRunner(
       );
       if (stepId) {
         try {
-          await deps.stepRecorder.finish(stepId, { status: 'FAILED', error: pipelineError });
+          await deps.stepRecorder.finish(stepId, {
+            status: 'FAILED',
+            error: pipelineError,
+            cost: costAcc.total(), // 실패 노드도 이미 소비한 resolver/handler 비용은 기록 (#24)
+          });
         } catch (finishErr) {
           logger.warn('[NodeRunner] failed to record FAILED step', { stepId, finishErr });
         }

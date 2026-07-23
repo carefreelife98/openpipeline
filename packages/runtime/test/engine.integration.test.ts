@@ -1,7 +1,7 @@
 import { defineNode } from '@openpipeline/core';
 import { createIfNodeSpec, createLlmInvokeNodeSpec } from '@openpipeline/nodes';
 import { MemoryStore } from '@openpipeline/store-memory';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 
 import { PipelineEngine } from '@openpipeline/runtime';
@@ -179,6 +179,68 @@ describe('PipelineEngine end-to-end', () => {
     const result = await (await engine.run({ pipelineId })).done;
     expect(result.status).toBe('FAILED');
     expect(result.error).toBeDefined();
+  });
+
+  it('completes SUCCESS even when a node output contains circular refs (safeJson)', async () => {
+    // defineNode handler returns a self-referential object. Before the
+    // first-terminal-wins + safeJson fix, persisting this via a naive JSON
+    // write would throw mid-completeRun, and a retry/second completeRun call
+    // could flip an already-SUCCESS run to FAILED (K10 -> S1/K5 chain). Now:
+    // the run still completes SUCCESS, `done` never rejects, and the value
+    // handed to the store's terminal write has the cycle replaced by the
+    // '[circular]' sentinel instead of throwing.
+    const store = new MemoryStore();
+    // Spy on completeRun (still delegates to the real MemoryStore impl) so the
+    // test can inspect exactly what the engine hands the store for
+    // persistence — MemoryStore's public RunSummary doesn't surface `output`.
+    const completeRunSpy = vi.spyOn(store, 'completeRun');
+    const engine = new PipelineEngine({ store, llmFactory: stubLlmFactory });
+    engine.registerNode(
+      defineNode({
+        key: 'tool.circ',
+        nodeType: 'TOOL',
+        displayName: 'Circular',
+        description: 'Returns a self-referential object.',
+        icon: 'x',
+        inputSchema: z.object({}),
+        outputSchema: z.looseObject({ kind: z.literal('tool.circ') }),
+        handler: () => {
+          const circ: Record<string, unknown> = { ok: true };
+          circ.self = circ;
+          return Promise.resolve({ kind: 'tool.circ' as const, ...circ });
+        },
+      })
+    );
+
+    const pipelineId = await engine.save({
+      name: 'circular-output',
+      nodes: [
+        {
+          id: 'circ',
+          nodeType: 'TOOL',
+          key: 'tool.circ',
+          label: 'Circular',
+          inputs: {},
+        },
+      ],
+      edges: [],
+    });
+
+    const { runId, done } = await engine.run({ pipelineId });
+    const result = await done; // must not reject
+
+    expect(result.status).toBe('SUCCESS');
+    const [summary] = await store.listRuns(pipelineId);
+    expect(summary?.id).toBe(runId);
+    expect(summary?.status).toBe('SUCCESS');
+
+    const completeCall = completeRunSpy.mock.calls.find(([id]) => id === runId);
+    expect(completeCall).toBeDefined();
+    const persistedOutput = completeCall?.[1].output;
+    // safeJson broke the cycle — this must not throw, and must contain the
+    // explicit sentinel (never a silently dropped/empty value).
+    expect(() => JSON.stringify(persistedOutput)).not.toThrow();
+    expect(JSON.stringify(persistedOutput)).toContain('[circular]');
   });
 
   it('streams NODE_START/NODE_END and RUN_COMPLETE events via onEvent', async () => {
