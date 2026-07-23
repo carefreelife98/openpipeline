@@ -122,7 +122,7 @@ export async function getRawSchemas(
     const rawClient = await (
       client as unknown as {
         getClient: (serverName: string) => Promise<{
-          listTools: () => Promise<{
+          listTools: (params?: { cursor?: string }) => Promise<{
             tools: Array<{ name: string; inputSchema?: unknown; outputSchema?: unknown }>;
             nextCursor?: string;
           }>;
@@ -132,7 +132,7 @@ export async function getRawSchemas(
 
     let cursor: string | undefined;
     do {
-      const resp = await rawClient.listTools();
+      const resp = await rawClient.listTools(cursor ? { cursor } : undefined);
       for (const t of resp.tools) {
         if (t.inputSchema != null) inputSchemas.set(t.name, t.inputSchema);
         if (t.outputSchema != null) outputSchemas.set(t.name, t.outputSchema);
