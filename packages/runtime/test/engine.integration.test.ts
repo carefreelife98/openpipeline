@@ -561,6 +561,129 @@ describe('PipelineEngine end-to-end', () => {
   // `classifyRunFailure`'s own testing strategy) is unit-tested directly in
   // node-failure-event.test.ts instead.
 
+  it('#4 — a store failure on the SUCCESS terminal write does not reclassify a genuinely successful run as FAILED', async () => {
+    const store = new MemoryStore();
+    const originalCompleteRun = store.completeRun.bind(store);
+    vi.spyOn(store, 'completeRun').mockImplementation((runId, result) => {
+      if (result.status === 'SUCCESS') {
+        return Promise.reject(new Error('store is down'));
+      }
+      return originalCompleteRun(runId, result);
+    });
+    const warn = vi.fn();
+    const engine = new PipelineEngine({
+      store,
+      llmFactory: stubLlmFactory,
+      logger: { info: vi.fn(), warn, error: vi.fn(), debug: vi.fn() },
+    });
+    engine.registerNode(
+      defineNode({
+        key: 'tool.pass-4',
+        nodeType: 'TOOL',
+        displayName: 'Pass',
+        description: 'No-op pass-through node.',
+        icon: 'x',
+        inputSchema: z.object({}),
+        outputSchema: z.object({ kind: z.literal('tool.pass-4') }),
+        handler: () => Promise.resolve({ kind: 'tool.pass-4' as const }),
+      })
+    );
+    const pipelineId = await engine.save({
+      name: 'success-persist-fails',
+      nodes: [{ id: 'a', nodeType: 'TOOL', key: 'tool.pass-4', label: 'A', inputs: {} }],
+      edges: [],
+    });
+
+    const result = await (await engine.run({ pipelineId })).done; // must not reject
+
+    // The node graph genuinely succeeded — that must survive the store's
+    // SUCCESS-write failure, not fall through to the catch block's FAILED
+    // reclassification (which would also discard the real outputs/cost).
+    expect(result.status).toBe('SUCCESS');
+    expect(result.outputs.a).toEqual({ kind: 'tool.pass-4' });
+    expect(warn).not.toHaveBeenCalled(); // this path logs via .error, not .warn
+  });
+
+  it('#5 — logs a warning (does not silently drop it) when completeRun(SUCCESS) reports it lost the terminal-write race', async () => {
+    const store = new MemoryStore();
+    vi.spyOn(store, 'completeRun').mockImplementation(() => Promise.resolve(false));
+    const warn = vi.fn();
+    const engine = new PipelineEngine({
+      store,
+      llmFactory: stubLlmFactory,
+      logger: { info: vi.fn(), warn, error: vi.fn(), debug: vi.fn() },
+    });
+    engine.registerNode(
+      defineNode({
+        key: 'tool.pass-5',
+        nodeType: 'TOOL',
+        displayName: 'Pass',
+        description: 'No-op pass-through node.',
+        icon: 'x',
+        inputSchema: z.object({}),
+        outputSchema: z.object({ kind: z.literal('tool.pass-5') }),
+        handler: () => Promise.resolve({ kind: 'tool.pass-5' as const }),
+      })
+    );
+    const pipelineId = await engine.save({
+      name: 'lost-terminal-race',
+      nodes: [{ id: 'a', nodeType: 'TOOL', key: 'tool.pass-5', label: 'A', inputs: {} }],
+      edges: [],
+    });
+
+    const result = await (await engine.run({ pipelineId })).done;
+
+    expect(result.status).toBe('SUCCESS'); // still emits/returns SUCCESS...
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('lost the terminal-write race')); // ...but the race loss is surfaced, not silently dropped
+  });
+
+  it('#7 — a node failure cancels a still-running sibling branch in the same superstep (controller.abort() propagation)', async () => {
+    const engine = makeEngine();
+    engine.registerNode(boomNodeSpec('tool.boom-7'));
+    const observed = { abortedDuringWait: false, sawAbortAfterWait: false };
+    engine.registerNode(
+      defineNode({
+        key: 'tool.slow-observer-7',
+        nodeType: 'TOOL',
+        displayName: 'SlowObserver',
+        description: "Waits, observing whether ctx.signal gets aborted while it's in flight.",
+        icon: 'x',
+        inputSchema: z.object({}),
+        outputSchema: z.object({ kind: z.literal('tool.slow-observer-7') }),
+        handler: async (_i, ctx) => {
+          const onAbort = () => {
+            observed.abortedDuringWait = true;
+          };
+          ctx.signal?.addEventListener('abort', onAbort);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          ctx.signal?.removeEventListener('abort', onAbort);
+          observed.sawAbortAfterWait = ctx.signal?.aborted ?? false;
+          return { kind: 'tool.slow-observer-7' as const };
+        },
+      })
+    );
+
+    const pipelineId = await engine.save({
+      name: 'sibling-cancel-on-failure',
+      nodes: [
+        { id: 'boom', nodeType: 'TOOL', key: 'tool.boom-7', label: 'Boom', inputs: {} },
+        { id: 'slow', nodeType: 'TOOL', key: 'tool.slow-observer-7', label: 'Slow', inputs: {} },
+      ],
+      // Independent parallel branches (no edges between them) — both run as
+      // entries in the SAME first superstep (#14 — a zero-edge multi-node
+      // graph is a valid intentionally-parallel pipeline).
+      edges: [],
+    });
+
+    const result = await (await engine.run({ pipelineId })).done;
+    expect(result.status).toBe('FAILED');
+
+    // Let the slow handler's 50ms timer (and its post-await bookkeeping)
+    // actually finish before checking what it observed.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(observed.abortedDuringWait || observed.sawAbortAfterWait).toBe(true);
+  });
+
   it('onEvent on a finished run warns, returns a no-op unsubscribe, and does not leak a listener set (#K16)', async () => {
     const engine = makeEngine();
     const pipelineId = await engine.save({

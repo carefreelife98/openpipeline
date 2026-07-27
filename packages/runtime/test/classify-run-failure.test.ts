@@ -61,4 +61,68 @@ describe('classifyRunFailure', () => {
     // Explicitly guard the exact self-contradictory pair the bug produced.
     expect(result).not.toEqual({ kind: 'ABORTED', code: 'COST_CAP' });
   });
+
+  // #6 — LangGraph 1.4.4 throws a native AggregateError (not a single error)
+  // when two or more nodes fail in the same superstep before the first is
+  // consumed. classifyRunFailure must look inside `.errors`, not just treat
+  // the AggregateError itself as an opaque, unrecognized RUNTIME failure.
+  describe('AggregateError (#6 — same-superstep multi-node failure fan-out)', () => {
+    it('classifies an AggregateError containing a COST_CAP PipelineNodeExecutionError as COST_CAP', () => {
+      const costCapErr = new PipelineNodeExecutionError('n1', {
+        kind: 'COST_CAP',
+        code: 'COST_CAP',
+        message: 'over cap',
+      });
+      const otherErr = new PipelineNodeExecutionError('n2', {
+        kind: 'RUNTIME',
+        code: 'RUN',
+        message: 'unrelated node failure',
+      });
+      const agg = new AggregateError([otherErr, costCapErr], 'multiple nodes failed');
+
+      expect(classifyRunFailure(agg, false)).toEqual({ kind: 'COST_CAP', code: 'COST_CAP' });
+    });
+
+    it('classifies an AggregateError containing a GraphRecursionError-named error as RECURSION_LIMIT', () => {
+      const recursionErr = new Error('Recursion limit reached');
+      recursionErr.name = 'GraphRecursionError';
+      const otherErr = new PipelineNodeExecutionError('n2', {
+        kind: 'RUNTIME',
+        code: 'RUN',
+        message: 'unrelated node failure',
+      });
+      const agg = new AggregateError([recursionErr, otherErr], 'multiple failures');
+
+      expect(classifyRunFailure(agg, false)).toEqual({ kind: 'RUNTIME', code: 'RECURSION_LIMIT' });
+    });
+
+    it('classifies an AggregateError with no COST_CAP/recursion signal as generic RUNTIME/RUN', () => {
+      const errA = new PipelineNodeExecutionError('n1', {
+        kind: 'RUNTIME',
+        code: 'RUN',
+        message: 'a',
+      });
+      const errB = new PipelineNodeExecutionError('n2', {
+        kind: 'RUNTIME',
+        code: 'RUN',
+        message: 'b',
+      });
+      const agg = new AggregateError([errA, errB], 'multiple plain failures');
+
+      expect(classifyRunFailure(agg, false)).toEqual({ kind: 'RUNTIME', code: 'RUN' });
+    });
+
+    it('I1 — an AggregateError containing a COST_CAP error is still classified ABORTED/RUN when the run is also aborted, never {kind:ABORTED, code:COST_CAP}', () => {
+      const costCapErr = new PipelineNodeExecutionError('n1', {
+        kind: 'COST_CAP',
+        code: 'COST_CAP',
+        message: 'over cap',
+      });
+      const agg = new AggregateError([costCapErr], 'aborted with a cost-cap node inside');
+
+      const result = classifyRunFailure(agg, true);
+      expect(result).toEqual({ kind: 'ABORTED', code: 'RUN' });
+      expect(result).not.toEqual({ kind: 'ABORTED', code: 'COST_CAP' });
+    });
+  });
 });

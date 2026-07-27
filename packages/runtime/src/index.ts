@@ -150,28 +150,54 @@ export interface RunHandle {
  * `aborted` always wins: `isRecursion`/`isCostCap` are gated on `!aborted`
  * so a self-contradictory pair like `{kind:'ABORTED', code:'COST_CAP'}` can
  * never be produced, regardless of what the underlying node/graph error was.
+ *
+ * #6 — scans EVERY error in `underlyingErrors(err)` (a native `AggregateError`
+ * from a same-superstep multi-node failure yields more than one candidate),
+ * so a COST_CAP/RECURSION_LIMIT buried alongside another node's plain
+ * failure in the same `AggregateError` is still classified correctly instead
+ * of silently falling through to generic RUNTIME/RUN.
  */
 export function classifyRunFailure(
   err: unknown,
   aborted: boolean
 ): { kind: 'ABORTED' | 'COST_CAP' | 'RUNTIME'; code: string } {
+  const candidates = underlyingErrors(err);
   // GraphRecursionError is LangGraph's own class; matched by name (not
   // `instanceof`) to avoid an import-time coupling on its exact export
   // shape — `name` is the stable, documented signal (#K2/#25).
-  const isRecursion = !aborted && err instanceof Error && err.name === 'GraphRecursionError';
+  const isRecursion =
+    !aborted && candidates.some((e) => e instanceof Error && e.name === 'GraphRecursionError');
   const isCostCap =
     !aborted &&
-    (err instanceof PipelineCostCapError ||
-      (err instanceof PipelineNodeExecutionError && err.pipelineError.kind === 'COST_CAP'));
+    candidates.some(
+      (e) =>
+        e instanceof PipelineCostCapError ||
+        (e instanceof PipelineNodeExecutionError && e.pipelineError.kind === 'COST_CAP')
+    );
   const kind = aborted ? 'ABORTED' : isCostCap ? 'COST_CAP' : 'RUNTIME';
   const code = isRecursion ? 'RECURSION_LIMIT' : isCostCap ? 'COST_CAP' : 'RUN';
   return { kind, code };
 }
 
 /**
- * Pure construction of the NODE_FAILED/NODE_ABORTED event (if any) to emit
- * for a run-ending error — extracted out of `execute()`'s catch block for the
- * same reason as `classifyRunFailure` right above it: reproducing
+ * LangGraph 1.4.4 throws a native `AggregateError` (not a single error)
+ * instead of the first failure alone when TWO OR MORE nodes fail in the SAME
+ * superstep before the first failure is consumed — `pregel/runner.js`'s
+ * `nodeErrors.size > 1` branch, confirmed directly in the installed LangGraph
+ * source. Both `classifyRunFailure` and `nodeFailureEvent` need to look
+ * inside `.errors` instead of assuming a single underlying error, or a
+ * concurrent-failure fan-out silently loses everything past the first error
+ * (#6/#K15 fan-out gap). A non-`AggregateError` is treated as its own
+ * one-element list so the single-error path is unchanged.
+ */
+function underlyingErrors(err: unknown): unknown[] {
+  return err instanceof AggregateError ? err.errors : [err];
+}
+
+/**
+ * Pure construction of the NODE_FAILED/NODE_ABORTED event(s) to emit for a
+ * run-ending error — extracted out of `execute()`'s catch block for the same
+ * reason as `classifyRunFailure` right above it: reproducing
  * `aborted === true` together with a `PipelineNodeExecutionError` reaching
  * `execute()`'s catch through the full LangGraph stack is not reliable to
  * pin in a test. Empirically, once an abort signal actually fires, LangGraph's
@@ -186,12 +212,21 @@ export function classifyRunFailure(
  * `checkAbort()` trip inside a node) — the only case a NODE_FAILED/
  * NODE_ABORTED event can be attributed to a specific node. Any other error
  * (graph compile failure, `GraphRecursionError`, a bare `PipelineCostCapError`,
- * an abort that never reached a running node, ...) yields no node-lifecycle
- * event — `RUN_COMPLETE` alone still reports the terminal status.
+ * an abort that never reached a running node, ...) contributes no
+ * node-lifecycle event — `RUN_COMPLETE` alone still reports the terminal
+ * status. Returns an ARRAY (#6): a native `AggregateError` (see
+ * `underlyingErrors` above) can wrap MULTIPLE `PipelineNodeExecutionError`s —
+ * every one of them gets its own NODE_FAILED/NODE_ABORTED event, not just the
+ * first.
  */
-export function nodeFailureEvent(err: unknown, aborted: boolean): NodeLifecycleEvent | undefined {
-  if (!(err instanceof PipelineNodeExecutionError)) return undefined;
-  return { kind: aborted ? 'NODE_ABORTED' : 'NODE_FAILED', nodeId: err.nodeId };
+export function nodeFailureEvent(err: unknown, aborted: boolean): NodeLifecycleEvent[] {
+  const events: NodeLifecycleEvent[] = [];
+  for (const candidate of underlyingErrors(err)) {
+    if (candidate instanceof PipelineNodeExecutionError) {
+      events.push({ kind: aborted ? 'NODE_ABORTED' : 'NODE_FAILED', nodeId: candidate.nodeId });
+    }
+  }
+  return events;
 }
 
 /**
@@ -471,16 +506,57 @@ export class PipelineEngine {
         );
       }
 
-      await this.store.completeRun(runId, {
-        status: 'SUCCESS',
-        output: safeJson(outputs),
-        cost,
-        lastState: safeJson(final),
-      });
+      // #4 — the SUCCESS terminal write is guarded individually (mirroring
+      // the FAILED path's already-guarded `completeRun`/`finalizeStaleSteps`
+      // calls in the catch block below, #E2). Without this, a store failure
+      // on the way OUT of an otherwise-successful run (including `safeJson`
+      // itself throwing) falls through to the outer `catch`, which
+      // reclassifies a run that genuinely succeeded as FAILED — discarding
+      // the real `outputs`/`cost` in favor of `{}`/`ZERO_COST` and emitting a
+      // RUN_COMPLETE the node graph never actually produced.
+      try {
+        // #5 — `completeRun` is `Promise<boolean>` (first-terminal-wins,
+        // contracts.ts): `false` means some other writer (a racing
+        // `completeRun`, or an external sweeper) already moved this run to a
+        // terminal state first. This run still succeeded from the engine's
+        // own point of view — SUCCESS is still emitted/returned below — but
+        // the persisted row may now disagree with that; surfaced as an
+        // explicit warning (never silently assumed consistent) rather than a
+        // discarded return value.
+        const completed = await this.store.completeRun(runId, {
+          status: 'SUCCESS',
+          output: safeJson(outputs),
+          cost,
+          lastState: safeJson(final),
+        });
+        if (!completed) {
+          this.logger.warn(
+            `[PipelineEngine] run ${runId}: completeRun(SUCCESS) lost the terminal-write race — ` +
+              `the persisted row's status may not match the RUN_COMPLETE/SUCCESS being emitted now`
+          );
+        }
+      } catch (persistErr) {
+        this.logger.error(
+          `[PipelineEngine] completeRun(SUCCESS) failed for ${runId}: ${String(persistErr)}`
+        );
+      }
       this.emit(runId, { kind: 'RUN_COMPLETE', status: 'SUCCESS' });
       return { runId, status: 'SUCCESS', outputs, cost };
     } catch (err) {
       const aborted = err instanceof PipelineAbortedError || controller.signal.aborted;
+      // #7 — a run-ending failure (a node throwing, or a COST_CAP/
+      // RECURSION_LIMIT trip) must cancel any STILL-RUNNING sibling branches
+      // too, not just this run's own bookkeeping below. `controller.signal`
+      // is exactly what flows into `streamEvents`' `configurable.signal` —
+      // the same AbortSignal node-runner's `checkAbort()` polls and handlers
+      // receive as `ctx.signal` to cancel in-flight LLM calls — so without
+      // this, a sibling branch's already-started LLM call keeps running (and
+      // billing) to completion even after the run itself has failed,
+      // defeating `costCapUsd`'s purpose. Computed AFTER `aborted` is
+      // captured (never before) so calling it here can never flip a
+      // RUNTIME/COST_CAP classification into ABORTED — a no-op if the run was
+      // already aborted.
+      controller.abort();
       const status: RunStatus = aborted ? 'ABORTED' : 'FAILED';
       // I1 — `kind`/`code` must never disagree with `aborted`: see
       // classifyRunFailure's own doc for why this is gated there, not here.
@@ -498,21 +574,33 @@ export class PipelineEngine {
         );
       }
       try {
-        await this.store.completeRun(runId, {
+        // #5 — see the SUCCESS-path comment above: consume the boolean and
+        // warn (don't silently drop it) when this run lost the terminal-write
+        // race too.
+        const completed = await this.store.completeRun(runId, {
           status,
           error: { kind, code, message },
         });
+        if (!completed) {
+          this.logger.warn(
+            `[PipelineEngine] run ${runId}: completeRun(${status}) lost the terminal-write race — ` +
+              `the persisted row's status may not match the RUN_COMPLETE/${status} being emitted now`
+          );
+        }
       } catch (storeErr) {
         this.logger.error(`[PipelineEngine] completeRun failed for ${runId}: ${String(storeErr)}`);
       }
-      // K15 — a node failure/abort must not silently "evaporate" for a live
-      // subscriber: translateEvent only ever emits NODE_START/NODE_END (from
-      // LangGraph's own on_chain_start/on_chain_end), so a node that throws
-      // never gets an on_chain_end and no NODE_END is emitted for it either.
-      // See nodeFailureEvent's own doc for why this is delegated to a pure,
-      // separately-tested helper rather than inlined here.
-      const nodeEvent = nodeFailureEvent(err, aborted);
-      if (nodeEvent) this.emit(runId, nodeEvent);
+      // K15/#6 — a node failure/abort must not silently "evaporate" for a
+      // live subscriber: translateEvent only ever emits NODE_START/NODE_END
+      // (from LangGraph's own on_chain_start/on_chain_end), so a node that
+      // throws never gets an on_chain_end and no NODE_END is emitted for it
+      // either. See nodeFailureEvent's own doc for why this is delegated to a
+      // pure, separately-tested helper (now returning an ARRAY — a native
+      // `AggregateError` from >=2 nodes failing in the same superstep can
+      // carry more than one attributable node failure) rather than inlined
+      // here.
+      const nodeEvents = nodeFailureEvent(err, aborted);
+      for (const nodeEvent of nodeEvents) this.emit(runId, nodeEvent);
       this.emit(runId, { kind: 'RUN_COMPLETE', status });
       return {
         runId,
