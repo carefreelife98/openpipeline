@@ -146,7 +146,27 @@ export function createBuilderStore() {
 
     removeNode: (id) => {
       set((s) => ({
-        nodes: s.nodes.filter((n) => n.id !== id),
+        // Beyond dropping the node itself, prune `{kind:'state', path:'outputs.<id>...'}`
+        // bindings that OTHER nodes hold into it — otherwise a deleted node leaves a
+        // dangling reference that only surfaces as a runtime FAILED much later (#S12).
+        // Exact path-segment match only (`outputs.<id>` or `outputs.<id>.rest`), so
+        // e.g. deleting node "ab" must not prune a binding pointing at "outputs.abc.field".
+        nodes: s.nodes
+          .filter((n) => n.id !== id)
+          .map((n) => {
+            const pruned = Object.fromEntries(
+              Object.entries(n.inputs).filter(
+                ([, b]) =>
+                  !(
+                    b.kind === 'state' &&
+                    (b.path === `outputs.${id}` || b.path.startsWith(`outputs.${id}.`))
+                  )
+              )
+            );
+            return Object.keys(pruned).length === Object.keys(n.inputs).length
+              ? n
+              : { ...n, inputs: pruned };
+          }),
         edges: s.edges.filter((e) => e.fromNodeId !== id && e.toNodeId !== id),
         startTargets: s.startTargets.filter((t) => t !== id),
         endSources: s.endSources.filter((t) => t !== id),
@@ -213,6 +233,9 @@ export function createBuilderStore() {
 
     addEdge: (edge) => {
       set((s) => {
+        // A node cannot feed its own input — reject self-loops at the edit
+        // model so the graph never round-trips one to the server (#S13a).
+        if (edge.fromNodeId === edge.toNodeId) return {};
         const dup = s.edges.find(
           (e) =>
             e.fromNodeId === edge.fromNodeId &&
