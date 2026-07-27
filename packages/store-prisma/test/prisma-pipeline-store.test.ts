@@ -69,12 +69,30 @@ function createFakePrisma(): FakePrisma {
   const rowId = (candidate: unknown, table: TableName): string =>
     typeof candidate === 'string' ? candidate : id(table);
 
+  // `pipelineNode.id` is a real global primary key in schema.prisma — not
+  // scoped per pipeline. A create/createMany that supplies an id already
+  // present in the table (belonging to ANY pipeline, including a different
+  // one) collides on that PK. Real Prisma surfaces this as a P2002 unique-
+  // constraint violation; simulate that here so a test against this fake can
+  // tell the difference between "the store pre-empted the clash with a clear
+  // ownership error" and "the store let it fall through to a confusing P2002"
+  // (S4/#10) — matching real Postgres behavior instead of silently
+  // overwriting the row via `Map.set`.
+  const rejectIfNodeIdTaken = (rid: string): void => {
+    if (tables.pipelineNode.has(rid)) {
+      throw new Error(
+        `Unique constraint failed on the fields: (\`id\`) [P2002] — pipelineNode id "${rid}" already exists`
+      );
+    }
+  };
+
   const delegate = (name: TableName): PrismaClientLike[TableName] => {
     const t = tables[name];
     return {
       create: <TRow extends { id: string }>({ data }: { data: object }): Promise<TRow> => {
         const d = data as Row;
         const rid = rowId(d.id, name);
+        if (name === 'pipelineNode') rejectIfNodeIdTaken(rid);
         const row: Row = {
           ...d,
           id: rid,
@@ -93,6 +111,7 @@ function createFakePrisma(): FakePrisma {
         for (const d0 of data) {
           const d = d0 as Row;
           const rid = rowId(d.id, name);
+          if (name === 'pipelineNode') rejectIfNodeIdTaken(rid);
           t.set(rid, { ...d, id: rid });
         }
         return Promise.resolve({ count: data.length });
@@ -494,6 +513,81 @@ describe('PrismaPipelineStore.save — diff update path', () => {
     await store.save(draft({ id, edges: [] }));
 
     expect(fake.rowsOf('pipelineEdge')).toHaveLength(0);
+  });
+});
+
+describe('PrismaPipelineStore.save — cross-pipeline node id ownership guard (S4/#10)', () => {
+  it('rejects a client-supplied node id belonging to ANOTHER pipeline on create, with a clear ownership error', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+    // Seed a node that already belongs to a different pipeline.
+    fake.tables.pipelineNode.set('shared-id', {
+      id: 'shared-id',
+      pipelineId: 'someone-elses-pipeline',
+      nodeType: 'TOOL',
+      key: 'tool.x',
+      label: 'X',
+      inputs: {},
+      isDeleted: false,
+    });
+
+    await expect(
+      store.save({
+        name: 'new-pipeline',
+        nodes: [{ id: 'shared-id', nodeType: 'TOOL', key: 'tool.x', label: 'X', inputs: {} }],
+        edges: [],
+      })
+    ).rejects.toThrow(/belongs? to another pipeline/i);
+    // Never the raw, undiagnostic Prisma P2002 message.
+    await expect(
+      store.save({
+        name: 'new-pipeline-2',
+        nodes: [{ id: 'shared-id', nodeType: 'TOOL', key: 'tool.x', label: 'X', inputs: {} }],
+        edges: [],
+      })
+    ).rejects.not.toThrow(/P2002/);
+  });
+
+  it('rejects a client-supplied node id belonging to ANOTHER pipeline on update', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+    const id = await store.save(draft()); // pipeline with n1, n2
+    fake.tables.pipelineNode.set('foreign-node', {
+      id: 'foreign-node',
+      pipelineId: 'someone-elses-pipeline',
+      nodeType: 'TOOL',
+      key: 'tool.x',
+      label: 'X',
+      inputs: {},
+      isDeleted: false,
+    });
+
+    await expect(
+      store.save({
+        id,
+        name: 'updated',
+        nodes: [
+          {
+            id: 'n1',
+            nodeType: 'TOOL',
+            key: 'tool.double',
+            label: 'Double',
+            inputs: { n: { kind: 'literal', value: 21 } },
+          },
+          { id: 'foreign-node', nodeType: 'TOOL', key: 'tool.x', label: 'X', inputs: {} },
+        ],
+        edges: [],
+      })
+    ).rejects.toThrow(/belongs? to another pipeline/i);
+  });
+
+  it('allows re-saving a draft whose node ids already belong to THIS SAME pipeline (own ids are not foreign)', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+    const id = await store.save(draft());
+
+    // Re-save with the same node ids — must not be misclassified as foreign.
+    await expect(store.save(draft({ id, name: 'renamed' }))).resolves.toBe(id);
   });
 });
 

@@ -1,6 +1,6 @@
 import { getEventListeners } from 'node:events';
 
-import { defineNode } from '@openpipeline/core';
+import { defineNode, type PipelineEvent } from '@openpipeline/core';
 import { createIfNodeSpec, createLlmInvokeNodeSpec } from '@openpipeline/nodes';
 import { MemoryStore } from '@openpipeline/store-memory';
 import { describe, it, expect, vi } from 'vitest';
@@ -49,6 +49,21 @@ function slowNodeSpec(key: string, delayMs: number) {
     handler: async () => {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
       return { kind: key };
+    },
+  });
+}
+
+function boomNodeSpec(key: string) {
+  return defineNode({
+    key,
+    nodeType: 'TOOL' as const,
+    displayName: key,
+    description: 'Always throws.',
+    icon: 'x',
+    inputSchema: z.object({}),
+    outputSchema: z.object({ kind: z.literal(key) }),
+    handler: () => {
+      throw new Error('boom');
     },
   });
 }
@@ -502,5 +517,85 @@ describe('PipelineEngine end-to-end', () => {
       await engine.run({ pipelineId, signal: external.signal })
     ).done;
     expect(getEventListeners(external.signal, 'abort')).toHaveLength(0);
+  });
+
+  it('emits NODE_FAILED (with the failing nodeId) before RUN_COMPLETE when a node throws (#K15)', async () => {
+    const engine = makeEngine();
+    engine.registerNode(boomNodeSpec('tool.boom'));
+
+    const pipelineId = await engine.save({
+      name: 'boom-pipeline',
+      nodes: [{ id: 'boom', nodeType: 'TOOL', key: 'tool.boom', label: 'Boom', inputs: {} }],
+      edges: [],
+    });
+
+    const kinds: string[] = [];
+    const events: PipelineEvent[] = [];
+    const { done } = await engine.run({
+      pipelineId,
+      onEvent: (e) => {
+        kinds.push(e.kind);
+        events.push(e);
+      },
+    });
+    const result = await done;
+
+    expect(result.status).toBe('FAILED');
+    expect(kinds).toContain('NODE_FAILED');
+    expect(kinds.indexOf('NODE_FAILED')).toBeLessThan(kinds.indexOf('RUN_COMPLETE'));
+    const failedEvent = events.find((e) => e.kind === 'NODE_FAILED');
+    expect(failedEvent?.nodeId).toBe('boom');
+  });
+
+  // NOTE: there is deliberately no integration test here for the
+  // NODE_ABORTED branch (aborted mid-node). Empirically (see task-7-report.md),
+  // once `engine.abort()`/an external signal actually fires, LangGraph's own
+  // signal handling on `streamEvents` always wins the race against
+  // node-runner's wrapped PipelineNodeExecutionError — the error that reaches
+  // `execute()`'s catch is a generic "operation was aborted" error, never the
+  // PipelineNodeExecutionError node-runner independently constructs and logs
+  // internally. This is the same class of "narrow, LangGraph-internals-
+  // dependent microtask window" documented on `classifyRunFailure` for the
+  // COST_CAP/RECURSION_LIMIT-vs-abort race (#I1) — not reliably reproducible
+  // end-to-end, so `nodeFailureEvent` (the extracted pure branch, mirroring
+  // `classifyRunFailure`'s own testing strategy) is unit-tested directly in
+  // node-failure-event.test.ts instead.
+
+  it('onEvent on a finished run warns, returns a no-op unsubscribe, and does not leak a listener set (#K16)', async () => {
+    const engine = makeEngine();
+    const pipelineId = await engine.save({
+      name: 'onevent-late',
+      nodes: [
+        {
+          id: 'upper',
+          nodeType: 'TOOL',
+          key: 'tool.uppercase',
+          label: 'Uppercase',
+          inputs: { text: { kind: 'literal', value: 'hello' } },
+        },
+      ],
+      edges: [],
+    });
+
+    const { runId, done } = await engine.run({ pipelineId });
+    await done;
+    // Flush the deferred (queueMicrotask'd) listener-cleanup so the run's
+    // listeners Set entry is definitely gone before we probe it.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(engine.isInFlight(runId)).toBe(false);
+    const listeners = (engine as unknown as { listeners: Map<string, Set<unknown>> }).listeners;
+    expect(listeners.has(runId)).toBe(false); // sanity: normal cleanup already ran
+
+    const receivedAfterFinish: string[] = [];
+    const unsubscribe = engine.onEvent(runId, (e) => receivedAfterFinish.push(e.kind));
+
+    expect(typeof unsubscribe).toBe('function');
+    expect(() => {
+      unsubscribe();
+    }).not.toThrow();
+    // The late subscribe must not resurrect a listener Set for this finished run.
+    expect(listeners.has(runId)).toBe(false);
+    expect(receivedAfterFinish).toEqual([]);
   });
 });

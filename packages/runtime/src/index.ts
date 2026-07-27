@@ -29,6 +29,7 @@ import {
   type PipelineNodeOutput,
   type PipelineEvent,
   type PipelineEventListener,
+  type NodeLifecycleEvent,
 } from '@openpipeline/core';
 import {
   NodeSpecRegistry,
@@ -168,6 +169,32 @@ export function classifyRunFailure(
 }
 
 /**
+ * Pure construction of the NODE_FAILED/NODE_ABORTED event (if any) to emit
+ * for a run-ending error — extracted out of `execute()`'s catch block for the
+ * same reason as `classifyRunFailure` right above it: reproducing
+ * `aborted === true` together with a `PipelineNodeExecutionError` reaching
+ * `execute()`'s catch through the full LangGraph stack is not reliable to
+ * pin in a test. Empirically, once an abort signal actually fires, LangGraph's
+ * own signal handling on `streamEvents` wins the race against node-runner's
+ * wrapped error every time — the error `execute()` observes is a generic
+ * "operation was aborted" rejection, not the `PipelineNodeExecutionError`
+ * node-runner independently constructs. So this is verified directly against
+ * its own inputs instead (#K15).
+ *
+ * `PipelineNodeExecutionError` is the only run-ending error carrying a
+ * `nodeId` (thrown by node-runner.ts, wrapping both handler failures and a
+ * `checkAbort()` trip inside a node) — the only case a NODE_FAILED/
+ * NODE_ABORTED event can be attributed to a specific node. Any other error
+ * (graph compile failure, `GraphRecursionError`, a bare `PipelineCostCapError`,
+ * an abort that never reached a running node, ...) yields no node-lifecycle
+ * event — `RUN_COMPLETE` alone still reports the terminal status.
+ */
+export function nodeFailureEvent(err: unknown, aborted: boolean): NodeLifecycleEvent | undefined {
+  if (!(err instanceof PipelineNodeExecutionError)) return undefined;
+  return { kind: aborted ? 'NODE_ABORTED' : 'NODE_FAILED', nodeId: err.nodeId };
+}
+
+/**
  * Orchestrates a pipeline run end to end over the kernel. A plain class that
  * takes the interface bag — no NestJS, no Prisma, no lifecycle hooks. Rewritten
  * (not extracted) from Mate-X's PipelineRunnerService, preserving: per-run MCP
@@ -246,8 +273,25 @@ export class PipelineEngine {
    * Subscribe to live events for a run (NODE_START/END/FAILED, LLM_CHUNK,
    * RUN_COMPLETE). Returns an unsubscribe function. Subscribe before the run's
    * `done` resolves to catch all events; events are fire-and-forget (no replay).
+   *
+   * A run that is not in flight (unknown id, or already finished) can never
+   * fire `listener` — there is no execute() left to emit into it. Without
+   * this check, calling `onEvent` on such a run would still allocate a Set in
+   * `listeners` and register the listener into it, and nothing would ever
+   * remove that Set again (the removal path lives in `run()`'s `.finally()`,
+   * which already ran for this runId) — a permanent per-runId leak for every
+   * late/mistaken subscribe (#K16). Guarded here instead of by trusting every
+   * caller: `handlers.streamRun` in @openpipeline/server already checks
+   * `isInFlight` before subscribing, so this only ever fires for a genuinely
+   * late subscriber reaching the engine directly.
    */
   onEvent(runId: string, listener: PipelineEventListener): () => void {
+    if (!this.inFlight.has(runId)) {
+      this.logger.warn(
+        `[PipelineEngine] onEvent(${runId}): run is not in flight — listener will never fire`
+      );
+      return () => {};
+    }
     let set = this.listeners.get(runId);
     if (!set) {
       set = new Set();
@@ -461,6 +505,14 @@ export class PipelineEngine {
       } catch (storeErr) {
         this.logger.error(`[PipelineEngine] completeRun failed for ${runId}: ${String(storeErr)}`);
       }
+      // K15 — a node failure/abort must not silently "evaporate" for a live
+      // subscriber: translateEvent only ever emits NODE_START/NODE_END (from
+      // LangGraph's own on_chain_start/on_chain_end), so a node that throws
+      // never gets an on_chain_end and no NODE_END is emitted for it either.
+      // See nodeFailureEvent's own doc for why this is delegated to a pure,
+      // separately-tested helper rather than inlined here.
+      const nodeEvent = nodeFailureEvent(err, aborted);
+      if (nodeEvent) this.emit(runId, nodeEvent);
       this.emit(runId, { kind: 'RUN_COMPLETE', status });
       return {
         runId,

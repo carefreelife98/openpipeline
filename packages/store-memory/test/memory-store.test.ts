@@ -1,5 +1,5 @@
 import type { CostBundle, PipelineDraft, RunCreate, RunStepStatus } from '@openpipeline/core';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import { MemoryStore } from '../src/index.js';
 
@@ -120,6 +120,28 @@ describe('MemoryStore.save (diff-update)', () => {
   });
 });
 
+describe('MemoryStore.save monotonic updatedAt (S3)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('advances updatedAt even when two saves land in the exact same millisecond (cache key monotonic)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+
+    const id = await store.save({ name: 'p', nodes: [], edges: [] });
+    const t1 = (await store.load(id)).pipeline.updatedAt.getTime();
+
+    // Fake time frozen — the wall clock genuinely has not advanced between
+    // saves, so only an explicit monotonic bump (not a naive `new Date()`)
+    // can make the second save's updatedAt strictly greater.
+    await store.save({ id, name: 'p2', nodes: [], edges: [] });
+    const t2 = (await store.load(id)).pipeline.updatedAt.getTime();
+
+    expect(t2).toBeGreaterThan(t1);
+  });
+});
+
 describe('MemoryStore.load', () => {
   it('throws a descriptive error for an unknown pipeline', async () => {
     // NOTE: load() has a Promise return type but throws synchronously rather
@@ -201,6 +223,46 @@ describe('completeRun first-terminal-wins', () => {
     expect(second).toBe(false);
     const runs = await store.listRuns(id);
     expect(runs[0]?.status).toBe('SUCCESS'); // FAILED로 역전되지 않음
+  });
+});
+
+describe('MemoryStore per-run seq locks cleanup (S5)', () => {
+  it('deletes both the seq counter and the per-run seq lock on first completeRun', async () => {
+    const { runId } = await store.createRun(runCreate('p'));
+    await store.start({ runId, nodeId: 'n1', nodeLabel: 'First' });
+
+    const internals = store as unknown as {
+      seqByRun: Map<string, number>;
+      seqLocks: Map<string, Promise<unknown>>;
+    };
+    expect(internals.seqByRun.has(runId)).toBe(true);
+    expect(internals.seqLocks.has(runId)).toBe(true);
+
+    await store.completeRun(runId, { status: 'SUCCESS' });
+
+    expect(internals.seqByRun.has(runId)).toBe(false);
+    expect(internals.seqLocks.has(runId)).toBe(false);
+
+    // Idempotent: a second (no-op) completeRun on the same run must not throw
+    // even though both maps were already cleared.
+    await expect(store.completeRun(runId, { status: 'FAILED' })).resolves.toBe(false);
+  });
+
+  it('keeps seq locks independent per run — completing one run leaves another in-flight run untouched', async () => {
+    const runA = (await store.createRun(runCreate('p'))).runId;
+    const runB = (await store.createRun(runCreate('p'))).runId;
+    await store.start({ runId: runA, nodeId: 'a1', nodeLabel: 'A1' });
+    await store.start({ runId: runB, nodeId: 'b1', nodeLabel: 'B1' });
+
+    await store.completeRun(runA, { status: 'SUCCESS' });
+
+    // runB's own sequencing keeps working after runA's lock/counter are gone.
+    await store.start({ runId: runB, nodeId: 'b2', nodeLabel: 'B2' });
+    expect(store.getSteps(runB).map((s) => s.sequenceIndex)).toEqual([0, 1]);
+
+    const internals = store as unknown as { seqLocks: Map<string, Promise<unknown>> };
+    expect(internals.seqLocks.has(runA)).toBe(false);
+    expect(internals.seqLocks.has(runB)).toBe(true);
   });
 });
 

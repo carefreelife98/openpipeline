@@ -119,6 +119,36 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
     return this.createPipeline(draft);
   }
 
+  /**
+   * `pipelineNode.id` is a global primary key in schema.prisma — not scoped
+   * per pipeline. A client-supplied node id that already belongs to ANOTHER
+   * pipeline collides on that PK; without this guard the collision surfaces
+   * only once `create`/`createMany` actually runs, as a bare Prisma P2002
+   * unique-constraint violation that gives no hint about *whose* id it is.
+   * Checked up front (inside the caller's transaction, via `tx`) so both the
+   * create and update paths reject with the same clear, attributable error
+   * before ever attempting the write (S4/#10). A no-op when `candidateIds`
+   * is empty (no genuinely-new node ids to check).
+   */
+  private async assertNodeIdsBelongToPipeline(
+    tx: PrismaClientLike,
+    pipelineId: string,
+    candidateIds: string[]
+  ): Promise<void> {
+    if (candidateIds.length === 0) return;
+    const clashes = await tx.pipelineNode.findMany<{ id: string; pipelineId: string }>({
+      where: { id: { in: candidateIds } },
+      select: { id: true, pipelineId: true },
+    });
+    const foreign = clashes.filter((c) => c.pipelineId !== pipelineId);
+    if (foreign.length > 0) {
+      throw new Error(
+        `node id(s) ${foreign.map((f) => f.id).join(', ')} belong to another pipeline — ` +
+          `client-provided ids must be fresh UUIDs or ids of this pipeline`
+      );
+    }
+  }
+
   private async createPipeline(draft: PipelineDraft): Promise<string> {
     return this.prisma.$transaction(async (tx) => {
       const pipeline = await tx.pipeline.create<{ id: string }>({
@@ -129,6 +159,14 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
         },
       });
       const pipelineId = pipeline.id;
+
+      // Every node in a brand-new pipeline is, from this pipeline's own
+      // perspective, "new" — check all of them against the global PK.
+      await this.assertNodeIdsBelongToPipeline(
+        tx,
+        pipelineId,
+        draft.nodes.map((n) => n.id)
+      );
 
       if (draft.nodes.length > 0) {
         await tx.pipelineNode.createMany({
@@ -179,6 +217,15 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
       });
       const existingIds = new Set(existing.map((n) => n.id));
       const draftIds = new Set(draft.nodes.map((n) => n.id));
+
+      // Only ids genuinely new to THIS pipeline can possibly clash with
+      // another pipeline's PK — an id already among `existingIds` is this
+      // pipeline's own and goes through `update()` below, never `create()`.
+      await this.assertNodeIdsBelongToPipeline(
+        tx,
+        id,
+        draft.nodes.map((n) => n.id).filter((nid) => !existingIds.has(nid))
+      );
 
       const toSoftDelete = existing
         .filter((n) => !draftIds.has(n.id) && !n.isDeleted)
