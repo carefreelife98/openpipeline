@@ -1,0 +1,180 @@
+name: Release
+
+# Trusted Publishing (OIDC) release pipeline.
+#
+# Trigger: pushing a tag matching v* (e.g. v0.2.1) after the 8
+# @openpipeline/* packages have already been bumped to that version in
+# lockstep and the bump commit has been merged to main. See RELEASING.md.
+#
+# No npm tokens/secrets are used or required here -- that is the entire
+# point of trusted publishing. Authentication is a short-lived OIDC token
+# minted by GitHub Actions and exchanged for a publish grant by the npm CLI,
+# scoped to exactly this repo + workflow file. See:
+# https://docs.npmjs.com/trusted-publishers
+# and docs/trusted-publishing-setup.md for the one-time npm-side setup.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  id-token: write # required so GitHub Actions can mint the OIDC token npm exchanges for a publish grant
+  contents: read
+
+jobs:
+  # (a) Full quality gate, run against the exact commit the tag points at,
+  # plus a hard assertion that every package version matches the tag.
+  # Nothing here is allowed to be skipped or soft-failed before publish.
+  verify-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build all packages
+        run: pnpm build
+
+      - name: Typecheck all packages
+        run: pnpm typecheck
+
+      - name: Run tests with coverage gate
+        run: pnpm test:ci
+
+      - name: Assert lockstep versions match the pushed tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "ERROR: tag '$TAG' is not a valid vX.Y.Z (or vX.Y.Z-prerelease) semver tag" >&2
+            exit 1
+          fi
+
+          expected="${TAG#v}"
+          echo "Expected lockstep version (from tag $TAG): $expected"
+
+          mismatch=0
+          for pkg in packages/*/package.json; do
+            name=$(node -p "require('./$pkg').name")
+            version=$(node -p "require('./$pkg').version")
+            if [[ "$version" != "$expected" ]]; then
+              echo "ERROR: $name is at $version, expected $expected (tag $TAG)" >&2
+              mismatch=1
+            else
+              echo "OK: $name@$version"
+            fi
+          done
+
+          if [[ "$mismatch" == "1" ]]; then
+            echo "Version mismatch detected -- aborting release. Bump packages/*/package.json in lockstep, commit, and re-tag before pushing again." >&2
+            exit 1
+          fi
+
+          echo "All packages match tag $TAG"
+
+  # (b) Pack every workspace package with pnpm (so workspace:* is rewritten
+  # to concrete versions -- npm pack/publish alone does NOT do this
+  # rewrite), then publish each resulting tarball with the npm CLI in
+  # leaf-first dependency order via trusted publishing.
+  publish:
+    needs: verify-gate
+    runs-on: ubuntu-latest
+    # No `environment:` key here by default -- the npm Trusted Publisher
+    # config for all 8 packages is set up with a blank environment (see
+    # docs/trusted-publishing-setup.md). If a maintainer later scopes
+    # publishing to a GitHub Environment (e.g. for required reviewers),
+    # add `environment: <name>` here AND update every package's Trusted
+    # Publisher entry on npmjs.com to the same environment name -- the two
+    # must match exactly or the OIDC exchange is rejected.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+          # Deliberately no `cache:` here. npm's own trusted-publishing
+          # workflow example sets `package-manager-cache: false` and notes
+          # "never use caching in release builds" -- keep the publish job's
+          # toolchain state minimal and reproducible per tag.
+          # https://docs.npmjs.com/trusted-publishers
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build all packages
+        run: pnpm build
+
+      - name: Upgrade npm CLI for OIDC trusted publishing
+        # Trusted publishing requires npm CLI >=11.5.1 and Node >=22.14.0.
+        # Node 22's bundled npm is 10.x, which cannot perform the OIDC
+        # token exchange -- it silently falls back to requiring a classic
+        # auth token instead, so this upgrade is mandatory, not optional.
+        # Source (accessed 2026-07-27), https://docs.npmjs.com/trusted-publishers:
+        #   "Trusted publishing requires npm CLI version 11.5.1 or later
+        #   and Node version 22.14.0 or higher."
+        # Provenance attestations are generated automatically by trusted
+        # publishing -- no `--provenance` flag is needed (same doc):
+        #   "If you use trusted publishing, provenance attestations are
+        #   automatically generated for your packages without requiring
+        #   the --provenance flag."
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - name: Pack all workspace packages (pnpm rewrites workspace:* to concrete versions)
+        run: |
+          set -euo pipefail
+          mkdir -p .release-tarballs
+          pnpm -r --filter "./packages/*" pack --pack-destination .release-tarballs
+          ls -la .release-tarballs
+
+      - name: Publish tarballs to npm, leaf-first, via trusted publishing
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+
+          # Leaf-first order: every package is published only after all of
+          # its @openpipeline/* internal deps are already on the registry.
+          #   nodes, mcp, store-memory, store-prisma, react -> depend on core
+          #   runtime                                        -> depends on core, nodes
+          #   server                                          -> depends on core, runtime
+          ORDER=(core nodes mcp store-memory store-prisma react runtime server)
+
+          for pkg in "${ORDER[@]}"; do
+            tarball=".release-tarballs/openpipeline-${pkg}-${VERSION}.tgz"
+            if [ ! -f "$tarball" ]; then
+              echo "ERROR: expected tarball not found: $tarball" >&2
+              exit 1
+            fi
+            echo "Publishing $tarball ..."
+            # No --access flag: every packages/*/package.json already sets
+            # "publishConfig": { "access": "public" }, which npm reads from
+            # the packed tarball. npm CLI performs the OIDC trusted-publisher
+            # exchange for this command automatically -- no token/secret is
+            # read or required.
+            npm publish "$tarball"
+          done
