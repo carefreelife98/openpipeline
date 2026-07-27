@@ -8,6 +8,37 @@ All 8 `@openpipeline/*` packages (`core`, `nodes`, `runtime`, `mcp`,
 **lockstep** — one version number for the whole set, published together (see
 [RELEASING.md](./RELEASING.md)).
 
+## [0.3.0] - 2026-07-27
+
+Dynamic MCP OAuth support in `@openpipeline/mcp`, plus release-infrastructure
+changes (npm Trusted Publishing). Purely additive — no breaking changes; all
+other packages are version-bumped in lockstep with no code changes.
+
+### Added (`@openpipeline/mcp`)
+
+- **`OAuthStateStore` seam + `InMemoryOAuthStateStore`** — a minimal key-value
+  persistence interface for OAuth client info, tokens, PKCE verifiers, and
+  discovery metadata. Host apps plug a DB-backed implementation; the bundled
+  in-memory store is the reference.
+- **`StoreBackedOAuthProvider` (+ `StoreBackedOAuthProviderOptions`)** — a
+  store-backed `OAuthClientProvider` base class driving the MCP SDK's
+  `auth()` flow (dynamic client registration, token persistence, PKCE).
+  Store keys escape identity segments, so composite identities cannot
+  collide (`a:b`+`c` vs `a`+`b:c`).
+- **`createClient` accepts an `OAuthClientProvider`** as its auth argument —
+  a string access token keeps working unchanged.
+- **`CatalogPolicy.resolveAuthProvider` hook** — lets a host resolve a
+  per-server/per-user `OAuthClientProvider` at catalog-load time; loader
+  precedence is `resolveAuthProvider` → `resolveToken` → `server.accessToken`.
+- **`authType: 'oauth_dynamic'`** on `McpServerConfig` for servers whose
+  credentials come from a dynamic OAuth flow.
+
+### Release infrastructure (no package behavior change)
+
+- Releases are now published from CI via **npm Trusted Publishing (OIDC)** on
+  `v*` tag push (`.github/workflows/release.yml`) — no tokens, no manual OTP.
+  Manual `pnpm publish` remains documented as a fallback in `RELEASING.md`.
+
 ## [0.2.0] - 2026-07-27
 
 Backport of the Mate-X production defect audit (26 findings) plus a graph

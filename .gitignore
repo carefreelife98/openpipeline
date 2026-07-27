@@ -29,3 +29,6 @@ pnpm-debug.log*
 # RELEASING.md's sibling docs/trusted-publishing-setup.md) and must NOT be
 # ignored, or such files silently never get tracked. See task-T-report.md.
 docs/superpowers/
+
+# Private autonomous-session log (predates the docs/ un-ignore in #12)
+/docs/user-queries.md

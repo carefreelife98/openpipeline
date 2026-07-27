@@ -1,6 +1,6 @@
 {
   "name": "@openpipeline/nodes",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Execution kernel (compiler, node-runner, registry, binding resolver) and built-in IF/LLM nodes for OpenPipeline.",
   "license": "MIT",
   "author": "carefreelife98",
