@@ -52,14 +52,37 @@ export interface PipelineHandlers {
     context?: RunContext;
   }): Promise<{ runId: string; status: string }>;
   /**
-   * Attach to an already-running (in-flight) run's live events. Resolves
-   * `{ found: true }` once `RUN_COMPLETE` fires, having unsubscribed itself.
-   * Resolves immediately with `{ found: false }` — without subscribing — for
-   * an unknown or already-finished run, so callers (e.g. an HTTP route) can
-   * 404 instead of hanging or silently replaying a run that never happened
-   * (#S11a/#E1).
+   * Start a run WITHOUT subscribing to its events — resolves as soon as the
+   * run has genuinely started (pipeline loaded, run row created, execution
+   * kicked off), unlike `runAndStream`/`runPipeline`, which don't resolve
+   * until the run finishes. This is what lets a caller validate `pipelineId`
+   * BEFORE committing to a response — a missing/nonexistent pipeline rejects
+   * HERE, not after headers are already sent (#8). Pair with
+   * `streamRun(runId, onEvent, opts)` right after to attach and stream.
    */
-  streamRun(runId: string, onEvent: (event: PipelineEvent) => void): Promise<{ found: boolean }>;
+  startRun(params: { pipelineId: string; context?: RunContext }): Promise<{ runId: string }>;
+  /**
+   * Attach to an already-running (in-flight) run's live events. Resolves
+   * `{ found: true }` once `RUN_COMPLETE` fires (or `opts.signal` aborts —
+   * #9), having unsubscribed itself either way. Resolves immediately with
+   * `{ found: false }` — without subscribing — for an unknown or
+   * already-finished run, so callers (e.g. an HTTP route) can 404 instead of
+   * hanging or silently replaying a run that never happened (#S11a/#E1).
+   *
+   * `opts.signal` (#9): without a way to cancel the subscription, a client
+   * that disconnects mid-stream leaves its listener registered in the
+   * engine's per-run `Set` (and the HTTP handler's SSE frame alive) until the
+   * run naturally reaches `RUN_COMPLETE` — up to the run's full timeout
+   * (default 10 minutes) — so a client that reconnects repeatedly (e.g. a
+   * browser `EventSource`'s automatic ~3s retry) accumulates one dead
+   * listener per reconnect. Pass an `AbortSignal` tied to the transport's
+   * disconnect event to unsubscribe and resolve promptly instead.
+   */
+  streamRun(
+    runId: string,
+    onEvent: (event: PipelineEvent) => void,
+    opts?: { signal?: AbortSignal }
+  ): Promise<{ found: boolean }>;
   /**
    * Whether a run is currently in flight. A synchronous, side-effect-free
    * read — the gate an HTTP route checks *before* writing response headers,
@@ -98,20 +121,39 @@ export function createPipelineHandlers(engine: EnginePort): PipelineHandlers {
       return { runId, status: result.status };
     },
 
+    async startRun(params) {
+      const { runId } = await engine.run(params);
+      return { runId };
+    },
+
     isInFlight(runId) {
       return engine.isInFlight(runId);
     },
 
-    async streamRun(runId, onEvent) {
+    async streamRun(runId, onEvent, opts) {
       if (!engine.isInFlight(runId)) return { found: false };
       await new Promise<void>((resolve) => {
-        const unsubscribe = engine.onEvent(runId, (event) => {
+        // #9 — `unsubscribe` must exist before `onAbort` can reference it:
+        // declared first (assigned immediately below, still synchronously,
+        // before `opts.signal` is ever consulted) so an ALREADY-aborted
+        // signal can call `onAbort()` right away without a TDZ error.
+        let unsubscribe: () => void = () => {};
+        const onAbort = (): void => {
+          unsubscribe();
+          resolve();
+        };
+        unsubscribe = engine.onEvent(runId, (event) => {
           onEvent(event);
           if (event.kind === 'RUN_COMPLETE') {
+            opts?.signal?.removeEventListener('abort', onAbort);
             unsubscribe();
             resolve();
           }
         });
+        if (opts?.signal) {
+          if (opts.signal.aborted) onAbort();
+          else opts.signal.addEventListener('abort', onAbort, { once: true });
+        }
       });
       return { found: true };
     },
