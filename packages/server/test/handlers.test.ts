@@ -42,6 +42,8 @@ class StubEngine implements EnginePort {
   private readonly listeners = new Map<string, Set<PipelineEventListener>>();
   /** runId -> the resolver for that run's `done` promise. */
   private readonly resolvers = new Map<string, (result: RunResult) => void>();
+  /** Mirrors the real engine's `inFlight` map — set in `run()`, cleared once `finish()` settles. */
+  private readonly inFlightIds = new Set<string>();
 
   save(draft: PipelineDraft): Promise<string> {
     this.saved.push(draft);
@@ -74,8 +76,15 @@ class StubEngine implements EnginePort {
     return Promise.resolve([summary]);
   }
 
-  abort(runId: string): void {
+  /** Mirrors the real engine: false for unknown/finished runs, true (and marks aborted) for in-flight ones. */
+  abort(runId: string): boolean {
+    if (!this.inFlightIds.has(runId)) return false;
     this.aborted.push(runId);
+    return true;
+  }
+
+  isInFlight(runId: string): boolean {
+    return this.inFlightIds.has(runId);
   }
 
   onEvent(runId: string, listener: PipelineEventListener): () => void {
@@ -94,8 +103,23 @@ class StubEngine implements EnginePort {
     this.runCalls.push(opts);
     this.runIdSeq += 1;
     const runId = `run-${String(this.runIdSeq)}`;
+    this.inFlightIds.add(runId);
+    // Mirrors the real engine: onEvent (if supplied) is registered
+    // synchronously here, before `run()` returns — no subscribe gap.
+    if (opts.onEvent) {
+      let set = this.listeners.get(runId);
+      if (!set) {
+        set = new Set();
+        this.listeners.set(runId, set);
+      }
+      set.add(opts.onEvent);
+    }
     const done = new Promise<RunResult>((resolve) => {
-      this.resolvers.set(runId, resolve);
+      this.resolvers.set(runId, (result) => {
+        this.inFlightIds.delete(runId);
+        this.listeners.delete(runId);
+        resolve(result);
+      });
     });
     return Promise.resolve({ runId, done });
   }
@@ -119,18 +143,6 @@ class StubEngine implements EnginePort {
 
 function makeRunResult(runId: string, status: RunStatus): RunResult {
   return { runId, status, outputs: {}, cost: ZERO_COST };
-}
-
-/**
- * `runAndStream` does `await engine.run(...)` before subscribing, so the
- * subscription is registered on a later microtask than the synchronous call.
- * Poll the (synchronous) listener count, yielding microtasks, until the handler
- * has subscribed — deterministic, no fixed sleep.
- */
-async function waitForListener(inv: RunInvocation): Promise<void> {
-  for (let i = 0; i < 100 && inv.listenerCount() === 0; i += 1) {
-    await Promise.resolve();
-  }
 }
 
 describe('createPipelineHandlers', () => {
@@ -190,13 +202,28 @@ describe('createPipelineHandlers', () => {
   });
 
   describe('abortRun', () => {
-    it('delegates the runId to engine.abort', () => {
+    it('returns false and does not delegate for an unknown/not-in-flight run (#S11d)', () => {
       const engine = new StubEngine();
       const handlers = createPipelineHandlers(engine);
 
-      handlers.abortRun('run-42');
+      const result = handlers.abortRun('run-42');
 
-      expect(engine.aborted).toEqual(['run-42']);
+      expect(result).toBe(false);
+      expect(engine.aborted).toEqual([]);
+    });
+
+    it('delegates to engine.abort and returns true for an in-flight run', async () => {
+      const engine = new StubEngine();
+      const handlers = createPipelineHandlers(engine);
+      const promise = handlers.runPipeline({ pipelineId: 'p1' });
+      const inv = engine.invocation('run-1');
+
+      const result = handlers.abortRun('run-1');
+
+      expect(result).toBe(true);
+      expect(engine.aborted).toEqual(['run-1']);
+      inv.finish(makeRunResult('run-1', 'ABORTED'));
+      await promise;
     });
   });
 
@@ -236,17 +263,20 @@ describe('createPipelineHandlers', () => {
   });
 
   describe('runAndStream', () => {
-    it('subscribes before awaiting, so events emitted during the run reach onEvent', async () => {
+    it('passes onEvent through RunOptions to engine.run — registered before run() returns, no subscribe gap (#S11b)', async () => {
       const engine = new StubEngine();
       const handlers = createPipelineHandlers(engine);
       const received: PipelineEvent[] = [];
 
       const promise = handlers.runAndStream({ pipelineId: 'p1' }, (e) => received.push(e));
       const inv = engine.invocation('run-1');
-      await waitForListener(inv);
 
-      // A subscriber must already be registered before `done` settles.
+      // No polling: registration happens synchronously inside engine.run(),
+      // which has already been called by the time this line runs.
       expect(inv.listenerCount()).toBe(1);
+      expect(engine.runCalls).toHaveLength(1);
+      expect(engine.runCalls[0]).toMatchObject({ pipelineId: 'p1' });
+      expect(typeof engine.runCalls[0]?.onEvent).toBe('function');
 
       inv.emit({ kind: 'NODE_START', nodeId: 'a' });
       inv.emit({ kind: 'NODE_END', nodeId: 'a', output: { ok: true } });
@@ -261,13 +291,12 @@ describe('createPipelineHandlers', () => {
       ]);
     });
 
-    it('unsubscribes once the run finishes (no listener leak)', async () => {
+    it("no longer leaks a listener once the run finishes (cleanup is the engine's job now, not a handler-side unsubscribe)", async () => {
       const engine = new StubEngine();
       const handlers = createPipelineHandlers(engine);
 
       const promise = handlers.runAndStream({ pipelineId: 'p1' }, () => undefined);
       const inv = engine.invocation('run-1');
-      await waitForListener(inv);
       expect(inv.listenerCount()).toBe(1);
 
       inv.finish(makeRunResult('run-1', 'SUCCESS'));
@@ -276,14 +305,11 @@ describe('createPipelineHandlers', () => {
       expect(inv.listenerCount()).toBe(0);
     });
 
-    it('unsubscribes even when the run rejects (cleanup in finally)', async () => {
+    it("propagates a rejection from engine.run's done promise (does not swallow it)", async () => {
       const engine = new StubEngine();
       const handlers = createPipelineHandlers(engine);
-      // Override run to hand back a rejecting `done` promise.
       const rejecting = vi.spyOn(engine, 'run').mockImplementation((opts: RunOptions) => {
         engine.runCalls.push(opts);
-        const unsubProbe = engine.onEvent('run-x', () => undefined);
-        unsubProbe(); // remove our probe; the handler adds its own.
         return Promise.resolve({
           runId: 'run-x',
           done: Promise.reject(new Error('boom')),
@@ -293,8 +319,6 @@ describe('createPipelineHandlers', () => {
       const promise = handlers.runAndStream({ pipelineId: 'p1' }, () => undefined);
 
       await expect(promise).rejects.toThrow('boom');
-      // The handler subscribed then unsubscribed in `finally` despite the reject.
-      expect(engine.invocation('run-x').listenerCount()).toBe(0);
       rejecting.mockRestore();
     });
 
@@ -309,7 +333,81 @@ describe('createPipelineHandlers', () => {
       engine.invocation('run-1').finish(makeRunResult('run-1', 'SUCCESS'));
       await promise;
 
-      expect(engine.runCalls).toEqual([{ pipelineId: 'p1', context: { userId: 'auditor-1' } }]);
+      expect(engine.runCalls).toHaveLength(1);
+      expect(engine.runCalls[0]).toMatchObject({
+        pipelineId: 'p1',
+        context: { userId: 'auditor-1' },
+      });
+      expect(typeof engine.runCalls[0]?.onEvent).toBe('function');
+    });
+  });
+
+  describe('isInFlight', () => {
+    it('delegates straight through to engine.isInFlight — the pre-writeHead 404 gate for the GET attach route', async () => {
+      const engine = new StubEngine();
+      const handlers = createPipelineHandlers(engine);
+
+      expect(handlers.isInFlight('nonexistent')).toBe(false);
+
+      const runPromise = handlers.runPipeline({ pipelineId: 'p1' });
+      expect(handlers.isInFlight('run-1')).toBe(true);
+
+      engine.invocation('run-1').finish(makeRunResult('run-1', 'SUCCESS'));
+      await runPromise;
+      expect(handlers.isInFlight('run-1')).toBe(false);
+    });
+  });
+
+  describe('streamRun (attach to an in-flight run)', () => {
+    it('returns { found: false } without subscribing, for a run that is not in flight (#S11a/#E1)', async () => {
+      const engine = new StubEngine();
+      const handlers = createPipelineHandlers(engine);
+
+      const result = await handlers.streamRun('nonexistent', () => undefined);
+
+      expect(result).toEqual({ found: false });
+      expect(engine.invocation('nonexistent').listenerCount()).toBe(0);
+    });
+
+    it('attaches to an in-flight run, forwards events, and resolves { found: true } on RUN_COMPLETE, then unsubscribes', async () => {
+      const engine = new StubEngine();
+      const handlers = createPipelineHandlers(engine);
+      // Start a run out of band (as runPipeline/runAndStream would) so it is in flight.
+      const runPromise = handlers.runPipeline({ pipelineId: 'p1' });
+      const inv = engine.invocation('run-1');
+      const received: PipelineEvent[] = [];
+
+      const streamPromise = handlers.streamRun('run-1', (e) => received.push(e));
+      expect(inv.listenerCount()).toBe(1);
+
+      inv.emit({ kind: 'NODE_START', nodeId: 'a' });
+      inv.emit({ kind: 'RUN_COMPLETE', status: 'SUCCESS' });
+
+      await expect(streamPromise).resolves.toEqual({ found: true });
+      expect(received).toEqual([
+        { kind: 'NODE_START', nodeId: 'a' },
+        { kind: 'RUN_COMPLETE', status: 'SUCCESS' },
+      ]);
+      expect(inv.listenerCount()).toBe(0); // unsubscribed itself on RUN_COMPLETE
+
+      inv.finish(makeRunResult('run-1', 'SUCCESS'));
+      await runPromise;
+    });
+
+    it('does not call engine.run — attaching never starts a new run', async () => {
+      const engine = new StubEngine();
+      const handlers = createPipelineHandlers(engine);
+      const runPromise = handlers.runPipeline({ pipelineId: 'p1' });
+      const inv = engine.invocation('run-1');
+
+      const streamPromise = handlers.streamRun('run-1', () => undefined);
+      inv.emit({ kind: 'RUN_COMPLETE', status: 'SUCCESS' });
+      await streamPromise;
+
+      inv.finish(makeRunResult('run-1', 'SUCCESS'));
+      await runPromise;
+
+      expect(engine.runCalls).toHaveLength(1); // only the original runPipeline() call
     });
   });
 });

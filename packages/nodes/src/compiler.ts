@@ -5,8 +5,10 @@ import {
   PipelineCompileError,
   type PipelineWithGraph,
   type CompiledNode,
+  type NodeSpec,
 } from '@openpipeline/core';
 
+import { validateGraph, toCompiledNodeMap } from './graph-validator.js';
 import { makeNodeRunner, type NodeRunnerDeps } from './node-runner.js';
 import type { NodeSpecRegistry, NodeResolveContext } from './registry.js';
 
@@ -15,7 +17,6 @@ export type CompilerDeps = Omit<NodeRunnerDeps, 'nodeMap'> & {
   registry: NodeSpecRegistry;
   /** Optional graph validator. Throw or return errors to reject compilation. */
   validate?: (graph: PipelineWithGraph, ctx: NodeResolveContext) => Promise<void> | void;
-  resolveContext?: NodeResolveContext;
 };
 
 export interface CompiledPipeline {
@@ -45,24 +46,31 @@ export class PipelineCompiler {
   private readonly cache: CacheEntry[] = [];
   private readonly CAPACITY = 10;
 
-  private resolveContext: NodeResolveContext;
+  constructor(private readonly deps: CompilerDeps) {}
 
-  constructor(private readonly deps: CompilerDeps) {
-    this.resolveContext = deps.resolveContext ?? {};
-  }
-
-  /** Set the per-run resolve context (userId/tenantId/mcpCatalogCache) before compiling. */
-  setResolveContext(ctx: NodeResolveContext): void {
-    this.resolveContext = ctx;
-  }
-
-  async compile(graph: PipelineWithGraph): Promise<CompiledPipeline> {
-    const ctx: NodeResolveContext = this.resolveContext;
-
+  /**
+   * Compile a pipeline graph. `ctx` (userId/tenantId/mcpCatalogCache) is a
+   * per-call parameter, not shared mutable state — concurrent `compile()`
+   * calls (e.g. two users running different MCP-enabled pipelines at once)
+   * each see only their own `ctx` (#E5 — was a shared-field race before).
+   */
+  async compile(graph: PipelineWithGraph, ctx: NodeResolveContext = {}): Promise<CompiledPipeline> {
     // MCP-node graphs bypass the cache: an MCP spec depends on user/provider
     // state, so a cache hit could serve a stale spec.
     const hasMcpNode = graph.nodes.some((n) => n.key.startsWith('mcp:'));
     const cacheKey = `${graph.pipeline.id}:${String(new Date(graph.pipeline.updatedAt).getTime())}`;
+
+    // #10 — the consumer-supplied `validate` hook (documented for
+    // tenant/permission gating via `ctx`) must run on EVERY `compile()` call,
+    // cache hit or not. Running it only before the cache lookup meant it fired
+    // for the FIRST caller that ever compiled a given pipelineId:updatedAt
+    // (the one that populated the cache entry) and was silently skipped for
+    // every other caller — a different userId/tenantId — that reused the same
+    // cache entry afterwards (#E5 residue). Ordered before the cache lookup so
+    // it structurally cannot be bypassed.
+    if (this.deps.validate) {
+      await this.deps.validate(graph, ctx);
+    }
 
     if (!hasMcpNode) {
       const idx = this.cache.findIndex((e) => e.cacheKey === cacheKey);
@@ -72,10 +80,6 @@ export class PipelineCompiler {
         this.cache.unshift(entry);
         return entry.compiled;
       }
-    }
-
-    if (this.deps.validate) {
-      await this.deps.validate(graph, ctx);
     }
 
     const topo = analyzeTopology(graph.nodes, graph.edges);
@@ -95,23 +99,50 @@ export class PipelineCompiler {
     const entryNodeIds = topo.entryNodes.map((n) => n.id);
     const exitNodeIds = topo.exitNodes.map((n) => n.id);
 
-    // Build the node map first (resolve all specs in parallel) so runners can
-    // reference the complete map. MCP nodes resolve via the registry's resolver.
-    const nodeMap = new Map<string, CompiledNode>();
+    // Resolve every node's spec in parallel first (MCP nodes resolve via the
+    // registry's resolver). `specByNodeId` is keyed by nodeId (not by `key`) —
+    // an `mcp:` node's spec depends on the per-run catalog cache, so two nodes
+    // sharing a key could resolve to different specs.
     const resolved = await Promise.all(
       graph.nodes.map(async (wfNode) => ({
         wfNode,
         spec: await this.deps.registry.get(wfNode.key, ctx),
       }))
     );
-    for (const { wfNode, spec } of resolved) {
-      nodeMap.set(wfNode.id, {
-        node: wfNode,
-        spec,
-        predecessors: topo.predecessorsByNode.get(wfNode.id) ?? [],
-        successors: topo.successorsByNode.get(wfNode.id) ?? [],
-      });
+    const specByNodeId = new Map<string, NodeSpec>(
+      resolved.map(({ wfNode, spec }) => [wfNode.id, spec])
+    );
+
+    // Default-ON compile-time validation: downstream cycles, unreachable
+    // nodes, persisted nodeType vs. resolved spec mismatches, required input
+    // slots with no binding, and dead/non-ancestor state references
+    // (#K6,#K7,#K8,#K14). #13 — thrown as the SAME structured
+    // `PipelineCompileError` (public export) as TOPOLOGY_NO_ENTRY above and
+    // IF_MISSING_BRANCH below, not a bare `Error` — a consumer using
+    // `PipelineCompiler` directly (not just via the engine's run() catch,
+    // which only cares that *something* threw) needs `.entries` with
+    // `scope`/`kind`/`nodeId` to render a structured error instead of parsing
+    // a message string. The consumer `validate` hook above still runs as
+    // *additional* validation, not a replacement for this pass.
+    const issues = validateGraph(graph, specByNodeId);
+    if (issues.length > 0) {
+      const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
+      throw new PipelineCompileError(
+        issues.map((i) => ({
+          scope: i.nodeId ? ('node' as const) : ('graph' as const),
+          kind: i.code,
+          nodeId: i.nodeId,
+          nodeKey: i.nodeId ? nodeById.get(i.nodeId)?.key : undefined,
+          message: i.message,
+        })),
+        graph.pipeline.name
+      );
     }
+
+    // Build the node map runners reference, reusing the same construction
+    // `validateGraph` uses internally for ancestor checks (DRY) — pass the
+    // already-computed `topo` so it isn't recomputed a second time here.
+    const nodeMap: Map<string, CompiledNode> = toCompiledNodeMap(graph, specByNodeId, topo);
 
     const stateGraph = new StateGraph(PipelineStateAnnotation);
     const runnerDeps: NodeRunnerDeps = {

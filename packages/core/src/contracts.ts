@@ -77,9 +77,29 @@ export interface RunSummary {
  */
 export interface PipelineStore {
   load(pipelineId: string): Promise<PipelineWithGraph>;
+  /**
+   * Persist a pipeline draft (create if `draft.id` is absent, update
+   * otherwise) and return its id.
+   *
+   * Implementation obligation (#12/S3): the persisted pipeline's `updatedAt`
+   * MUST be strictly greater than the value it had before this call — even
+   * when the call lands in the same wall-clock millisecond as the previous
+   * save (real on a fast machine or a coarse OS clock). The compiler's LRU
+   * cache key is `${pipelineId}:${updatedAt.getTime()}`
+   * (`@openpipeline/nodes`'s `PipelineCompiler`); a same-millisecond re-save
+   * that fails to bump `updatedAt` forward is served the STALE, pre-edit
+   * compiled graph on the very next run. A database-generated `@updatedAt`
+   * timestamp is not sufficient on its own — implementations must explicitly
+   * clamp it forward, e.g. `new Date(Math.max(Date.now(), prevUpdatedAt.getTime() + 1))`.
+   */
   save(draft: PipelineDraft): Promise<string>;
   createRun(run: RunCreate): Promise<{ runId: string; startedAt: Date }>;
-  completeRun(runId: string, result: RunComplete): Promise<void>;
+  /**
+   * Terminal transition. First-terminal-wins: returns true iff THIS call moved
+   * the run RUNNING→terminal. A second call is a no-op returning false —
+   * a completed status is never overwritten (SUCCESS can't flip to FAILED).
+   */
+  completeRun(runId: string, result: RunComplete): Promise<boolean>;
   /**
    * Atomically add a cost delta to a run. Separated so non-Postgres backends
    * can implement it however they like (the Prisma adapter uses a jsonb update).

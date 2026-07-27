@@ -3,6 +3,7 @@
 
 export * from './enums.js';
 export * from './cost.js';
+export * from './cost-guard.js';
 export * from './value-binding.js';
 export * from './path-validator.js';
 export * from './node-output.js';
@@ -10,6 +11,7 @@ export * from './state.js';
 export * from './node-spec.js';
 export * from './graph.js';
 export * from './contracts.js';
+export { safeJson, type SafeJsonOptions } from './safe-json.js';
 export * from './errors.js';
 export * from './events.js';
 export * from './topology.js';

@@ -10,7 +10,7 @@ import '@xyflow/react/dist/style.css';
  * The playground IS the reference auth/router wrapper a consumer copies. It owns:
  *   - data loading: GET the seed pipeline -> store.loadDraft(...)
  *   - persistence: store.toDraft() -> POST /pipeline
- *   - running: GET the SSE stream -> nodeRunStatus overlay
+ *   - running: POST /pipeline/run/stream (starts the run + SSE) -> nodeRunStatus overlay
  *   - the palette: add nodes from the catalog
  * @openpipeline/react contributes only the canvas + store.
  */
@@ -67,7 +67,14 @@ export function App(): React.JSX.Element {
     setRunning(true);
     setNodeRunStatus({});
     pushLog('run started');
-    const res = await fetch(`/pipeline/runs/x/stream?pipelineId=${pipelineId}`);
+    // POST /pipeline/run/stream both starts the run and streams its live
+    // events — the GET .../stream route is attach-only now (it never starts a
+    // run; see the server package's #S11a/#E1 fix).
+    const res = await fetch('/pipeline/run/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pipelineId }),
+    });
     if (!res.body) throw new Error('SSE response has no body stream');
     const reader = res.body.getReader();
     const decoder = new TextDecoder();

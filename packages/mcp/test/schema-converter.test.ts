@@ -1,5 +1,5 @@
-import type { Logger } from '@openpipeline/core';
-import { describe, it, expect } from 'vitest';
+import { NOOP_LOGGER, type Logger } from '@openpipeline/core';
+import { describe, it, expect, vi } from 'vitest';
 
 import { McpSchemaConverter } from '../src/schema-converter.js';
 
@@ -164,6 +164,34 @@ describe('McpSchemaConverter — $ref dereferencing', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.zodSchema.safeParse({ x: 7 }).success).toBe(true);
+  });
+});
+
+describe('McpSchemaConverter — circular $ref signal (#S9/#17)', () => {
+  it('flags circular $ref truncation with hadCircularRef and a warn log', () => {
+    const warn = vi.fn();
+    const converter = new McpSchemaConverter({ ...NOOP_LOGGER, warn });
+    const schema = {
+      type: 'object',
+      properties: { node: { $ref: '#/$defs/tree' } },
+      $defs: { tree: { type: 'object', properties: { child: { $ref: '#/$defs/tree' } } } },
+    };
+    const result = converter.convert(schema, { providerKey: 'p', toolName: 't' });
+    expect(result.success).toBe(true);
+    expect(result.success && result.hadCircularRef).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('circular'));
+  });
+
+  it('does not set hadCircularRef when there is no $ref cycle', () => {
+    const warn = vi.fn();
+    const converter = new McpSchemaConverter({ ...NOOP_LOGGER, warn });
+    const result = converter.convert(
+      { type: 'object', properties: { a: { type: 'string' } } },
+      { providerKey: 'p', toolName: 't' }
+    );
+    expect(result.success).toBe(true);
+    expect(result.success && result.hadCircularRef).toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 

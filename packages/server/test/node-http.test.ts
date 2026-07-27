@@ -10,7 +10,7 @@ import type {
 } from '@openpipeline/core';
 import { ZERO_COST } from '@openpipeline/core';
 import type { RunHandle, RunOptions, RunResult } from '@openpipeline/runtime';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import type { EnginePort, PipelineHandlers } from '../src/handlers.js';
 import { createPipelineHandlers } from '../src/handlers.js';
@@ -35,6 +35,8 @@ class StubEngine implements EnginePort {
 
   private readonly listeners = new Map<string, Set<PipelineEventListener>>();
   private readonly resolvers = new Map<string, (r: RunResult) => void>();
+  /** Mirrors the real engine's `inFlight` map — set in `run()`, cleared once its resolver settles. */
+  private readonly inFlightIds = new Set<string>();
   private seq = 0;
 
   /** Auto-finish runs synchronously (used by the non-streaming path). */
@@ -60,8 +62,15 @@ class StubEngine implements EnginePort {
     return Promise.resolve([s]);
   }
 
-  abort(runId: string): void {
+  /** Mirrors the real engine: false for unknown/finished runs, true (and marks aborted) for in-flight ones. */
+  abort(runId: string): boolean {
+    if (!this.inFlightIds.has(runId)) return false;
     this.aborted.push(runId);
+    return true;
+  }
+
+  isInFlight(runId: string): boolean {
+    return this.inFlightIds.has(runId);
   }
 
   onEvent(runId: string, listener: PipelineEventListener): () => void {
@@ -80,8 +89,23 @@ class StubEngine implements EnginePort {
     this.runCalls.push(opts);
     this.seq += 1;
     const runId = `run-${String(this.seq)}`;
+    this.inFlightIds.add(runId);
+    // Mirrors the real engine: onEvent (if supplied) is registered
+    // synchronously here, before `run()` returns — no subscribe gap.
+    if (opts.onEvent) {
+      let set = this.listeners.get(runId);
+      if (!set) {
+        set = new Set();
+        this.listeners.set(runId, set);
+      }
+      set.add(opts.onEvent);
+    }
     const done = new Promise<RunResult>((resolve) => {
-      this.resolvers.set(runId, resolve);
+      this.resolvers.set(runId, (result) => {
+        this.inFlightIds.delete(runId);
+        this.listeners.delete(runId);
+        resolve(result);
+      });
     });
     if (this.autoFinish)
       this.resolvers.get(runId)?.({ runId, status: 'SUCCESS', outputs: {}, cost: ZERO_COST });
@@ -89,11 +113,24 @@ class StubEngine implements EnginePort {
   }
 
   controller(runId: string): RunController {
+    const emit = (event: PipelineEvent): void => {
+      for (const l of this.listeners.get(runId) ?? []) l(event);
+    };
     return {
-      emit: (event) => {
-        for (const l of this.listeners.get(runId) ?? []) l(event);
-      },
+      emit,
       finish: (status) => {
+        // Mirrors the real PipelineEngine's own invariant: RUN_COMPLETE is
+        // ALWAYS emitted (inside execute()) BEFORE its `done` promise
+        // settles, never the other way around — `streamRun`'s event-based
+        // completion detection (#8/#9's `startRun`+`streamRun` split, and
+        // the pre-existing GET attach route) depends on seeing this event,
+        // not on `done` resolving. Emitting first here means a test calling
+        // `finish()` alone (without a separate manual `emit(RUN_COMPLETE)`)
+        // still closes the SSE stream correctly, exactly like a real run.
+        // A test that DOES also call `emit(RUN_COMPLETE)` manually first is
+        // unaffected — that already unsubscribed the one listener that
+        // matters, so this second emit reaches nobody.
+        emit({ kind: 'RUN_COMPLETE', status });
         this.resolvers.get(runId)?.({ runId, status, outputs: {}, cost: ZERO_COST });
       },
     };
@@ -107,13 +144,19 @@ class StubEngine implements EnginePort {
 
 /**
  * The SSE handler subscribes only after `res.writeHead` flushes the response
- * headers, i.e. after `fetch` resolves. Poll until the server-side subscription
- * exists before driving the run — deterministic, no fixed sleep.
+ * headers, i.e. after `fetch` resolves. Poll until at least `count` server-side
+ * subscriptions exist for the run before driving it — deterministic, no fixed
+ * sleep. (`count` is 2 when both a POST /run/stream starter and a GET attach
+ * are subscribed to the same run concurrently.)
  */
-async function waitForSubscriber(engine: StubEngine, runId: string): Promise<void> {
-  for (let i = 0; i < 200 && engine.listenerCount(runId) === 0; i += 1) {
+async function waitForListenerCount(engine: StubEngine, runId: string, count = 1): Promise<void> {
+  for (let i = 0; i < 200 && engine.listenerCount(runId) < count; i += 1) {
     await new Promise((r) => setTimeout(r, 1));
   }
+}
+
+async function waitForSubscriber(engine: StubEngine, runId: string): Promise<void> {
+  await waitForListenerCount(engine, runId, 1);
 }
 
 interface TestServer {
@@ -221,35 +264,50 @@ describe('createNodeHttpHandler routing', () => {
     expect(engine.runCalls).toEqual([{ pipelineId: 'p1' }]);
   });
 
-  it('POST /pipeline/run/:runId/abort aborts that run', async () => {
+  it('POST /pipeline/run/:runId/abort 404s for an unknown/not-in-flight run (#S11d)', async () => {
     const { base, engine } = ctx();
 
     const res = await fetch(`${base}/pipeline/run/run-77/abort`, { method: 'POST' });
 
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'run not found or already finished' });
+    expect(engine.aborted).toEqual([]);
+  });
+
+  it('POST /pipeline/run/:runId/abort aborts an in-flight run and returns 200', async () => {
+    const { base, engine } = ctx();
+    engine.autoFinish = false; // keep the run in flight
+
+    const streamPromise = fetch(`${base}/pipeline/run/stream`, {
+      method: 'POST',
+      body: JSON.stringify({ pipelineId: 'p1' }),
+    });
+    await waitForSubscriber(engine, 'run-1');
+
+    const abortRes = await fetch(`${base}/pipeline/run/run-1/abort`, { method: 'POST' });
+    expect(abortRes.status).toBe(200);
+    expect(await abortRes.json()).toEqual({ ok: true });
+    expect(engine.aborted).toEqual(['run-1']);
+
+    // Settle the run so the still-open streaming response completes and the
+    // test doesn't leave a dangling request. `finish()` emits RUN_COMPLETE
+    // itself (see the StubEngine helper) — mirroring the real PipelineEngine,
+    // which always emits RUN_COMPLETE before its `done` promise settles; the
+    // route now resolves on that EVENT (`streamRun`, #8/#9), not on `done`.
+    engine.controller('run-1').finish('ABORTED');
+    const res = await streamPromise;
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
-    expect(engine.aborted).toEqual(['run-77']);
   });
 
-  it('GET /pipeline/runs/:runId/stream without pipelineId returns 400', async () => {
-    const { base } = ctx();
-
-    const res = await fetch(`${base}/pipeline/runs/run-1/stream`);
-
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'pipelineId query param required' });
-  });
-
-  it('GET /pipeline/runs/:runId/stream streams SSE frames then closes', async () => {
+  it("POST /pipeline/run/stream starts a run and streams its live events (the old GET route's real meaning) (#S11a/#E1)", async () => {
     const { base, engine } = ctx();
     engine.autoFinish = false; // drive the stream manually
 
-    // Issue the request and drive the run concurrently: the server processes the
-    // request independently of when `fetch` resolves, so we wait on the engine's
-    // own subscription state (set after `res.writeHead`) before emitting.
-    const responsePromise = fetch(`${base}/pipeline/runs/ignored/stream?pipelineId=p1`);
+    const responsePromise = fetch(`${base}/pipeline/run/stream`, {
+      method: 'POST',
+      body: JSON.stringify({ pipelineId: 'p1' }),
+    });
 
-    // The handler calls engine.run -> runId 'run-1'.
     await waitForSubscriber(engine, 'run-1');
     const c = engine.controller('run-1');
     c.emit({ kind: 'NODE_START', nodeId: 'a' });
@@ -266,6 +324,281 @@ describe('createNodeHttpHandler routing', () => {
     expect(text).toContain(
       'event: RUN_COMPLETE\ndata: {"kind":"RUN_COMPLETE","status":"SUCCESS"}\n\n'
     );
+    expect(engine.runCalls).toHaveLength(1);
+    expect(engine.runCalls[0]).toMatchObject({ pipelineId: 'p1', context: undefined });
+    // #8/#9 — the route now starts via `startRun` (no RunOptions.onEvent —
+    // pipelineId must be validated/the run started BEFORE writeHead, see
+    // below) and attaches via `streamRun`, which is what gives disconnects a
+    // real unsubscribe handle (#9).
+    expect(engine.runCalls[0]?.onEvent).toBeUndefined();
+  });
+
+  it('POST /pipeline/run/stream delivers events from the very first node — no subscribe gap in practice (#S11b)', async () => {
+    const { base, engine } = ctx();
+    // autoFinish stays true: the run (and its NODE_START/RUN_COMPLETE emission
+    // inside the stub's synchronous `run()`) completes before `fetch` even
+    // resolves. Before the RunOptions.onEvent fix, this ordering is exactly
+    // what used to lose the first event: the handler subscribed only *after*
+    // engine.run() resolved, by which time these had already fired. The
+    // route now subscribes via `startRun` + `streamRun` instead of
+    // RunOptions.onEvent (#8/#9's `startRun`/`streamRun` split), but the
+    // subscription still lands before any event the STUB is told to emit
+    // here, since the test explicitly waits for it via `waitForSubscriber`.
+    engine.autoFinish = false;
+    const responsePromise = fetch(`${base}/pipeline/run/stream`, {
+      method: 'POST',
+      body: JSON.stringify({ pipelineId: 'p1' }),
+    });
+    await waitForSubscriber(engine, 'run-1');
+    // Emit NODE_START synchronously, in the same tick the subscriber appears —
+    // simulating a run whose first event fires immediately.
+    engine.controller('run-1').emit({ kind: 'NODE_START', nodeId: 'a' });
+    engine.controller('run-1').finish('SUCCESS');
+
+    const text = await (await responsePromise).text();
+    const firstEventLine = text.split('\n\n')[0]?.split('\n')[0];
+    expect(firstEventLine).toBe('event: NODE_START');
+  });
+
+  it('POST /pipeline/run/stream 400s (headers unsent) for a missing pipelineId — never starts a run (#8)', async () => {
+    const { base, engine } = ctx();
+
+    const res = await fetch(`${base}/pipeline/run/stream`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.headers.get('content-type')).toBe('application/json');
+    expect(res.headers.get('content-type')).not.toBe('text/event-stream');
+    expect(await res.json()).toEqual({
+      error: 'pipelineId is required and must be a non-empty string',
+    });
+    expect(engine.runCalls).toHaveLength(0);
+  });
+
+  it('POST /pipeline/run/stream 400s (headers unsent) for a non-string pipelineId — never starts a run (#8)', async () => {
+    const { base, engine } = ctx();
+
+    const res = await fetch(`${base}/pipeline/run/stream`, {
+      method: 'POST',
+      body: JSON.stringify({ pipelineId: 42 }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.headers.get('content-type')).not.toBe('text/event-stream');
+    expect(engine.runCalls).toHaveLength(0);
+  });
+
+  it('POST /pipeline/run/stream 400s (headers unsent, not a raw JSON body inside an already-open SSE stream) when the run fails to start — e.g. a nonexistent pipelineId (#8)', async () => {
+    const { base, engine } = ctx();
+    // Simulate `store.load` rejecting inside `engine.run()` for an unknown
+    // pipelineId — exactly the scenario that used to reject AFTER
+    // `res.writeHead(200, SSE_HEADERS)` had already been sent.
+    const rejecting = vi.spyOn(engine, 'run').mockImplementation((opts: RunOptions) => {
+      engine.runCalls.push(opts);
+      return Promise.reject(new Error('Pipeline not found: nope'));
+    });
+
+    const res = await fetch(`${base}/pipeline/run/stream`, {
+      method: 'POST',
+      body: JSON.stringify({ pipelineId: 'nope' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.headers.get('content-type')).not.toBe('text/event-stream');
+    expect(await res.json()).toEqual({ error: 'Pipeline not found: nope' });
+    rejecting.mockRestore();
+  });
+
+  it('a client disconnect on POST /pipeline/run/stream unsubscribes from the engine promptly instead of leaking a listener until RUN_COMPLETE (#9)', async () => {
+    const { base, engine, server } = ctx();
+    engine.autoFinish = false;
+    const observed = { serverSawClose: false };
+    server.on('request', (req, res) => {
+      if (req.url === '/pipeline/run/stream') {
+        // `res.on('close', ...)`, NOT `req.on('close', ...)` — the request's
+        // own `'close'` fires as soon as its (tiny, already-fully-read) body
+        // finishes, independent of whether the client is still connected
+        // waiting on the response; confirmed empirically, not just from
+        // Node's docs. `res`'s `'close'` is the one that actually reflects
+        // "the underlying connection for THIS response tore down" — see
+        // node-http.ts's own comment on the same choice.
+        res.on('close', () => {
+          observed.serverSawClose = true;
+        });
+      }
+    });
+
+    const controller = new AbortController();
+    const fetchPromise = fetch(`${base}/pipeline/run/stream`, {
+      method: 'POST',
+      body: JSON.stringify({ pipelineId: 'p1' }),
+      signal: controller.signal,
+    });
+    fetchPromise.catch(() => undefined); // aborting rejects the fetch itself
+    await waitForSubscriber(engine, 'run-1');
+    expect(engine.listenerCount('run-1')).toBe(1);
+    expect(observed.serverSawClose).toBe(false); // sanity: not already closed before the abort
+
+    controller.abort();
+
+    for (let i = 0; i < 500 && !observed.serverSawClose; i += 1) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(observed.serverSawClose).toBe(true);
+
+    // The engine-side subscription must be torn down promptly on disconnect —
+    // not left registered until the run's own RUN_COMPLETE (which, left
+    // undriven here, would otherwise never come).
+    for (let i = 0; i < 500 && engine.listenerCount('run-1') > 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(engine.listenerCount('run-1')).toBe(0);
+    // The run itself is untouched — fire-and-forget semantics (#S11c/#E2).
+    expect(engine.aborted).toEqual([]);
+    expect(engine.isInFlight('run-1')).toBe(true);
+
+    engine.controller('run-1').finish('SUCCESS');
+  });
+
+  it('GET /pipeline/runs/:runId/stream does NOT start a new run and 404s for an unknown/not-in-flight runId (#S11a/#E1)', async () => {
+    const { base, engine } = ctx();
+
+    const res = await fetch(`${base}/pipeline/runs/nonexistent/stream`);
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: 'run not in flight (finished-run replay: see roadmap)',
+    });
+    expect(engine.runCalls).toHaveLength(0);
+  });
+
+  it('GET /pipeline/runs/:runId/stream attaches to an in-flight run and streams its events, closing on RUN_COMPLETE', async () => {
+    const { base, engine } = ctx();
+    engine.autoFinish = false;
+
+    // Start the run out of band via the POST streaming route, kept open.
+    const startPromise = fetch(`${base}/pipeline/run/stream`, {
+      method: 'POST',
+      body: JSON.stringify({ pipelineId: 'p1' }),
+    });
+    await waitForSubscriber(engine, 'run-1');
+
+    const attachPromise = fetch(`${base}/pipeline/runs/run-1/stream`);
+    // Both the POST starter and the GET attach are now subscribed — wait for
+    // both before driving events, or RUN_COMPLETE could fire (and finish() the
+    // run) before the attach request has even reached the server, 404-ing it.
+    await waitForListenerCount(engine, 'run-1', 2);
+    const c = engine.controller('run-1');
+    c.emit({ kind: 'NODE_START', nodeId: 'a' });
+    c.emit({ kind: 'RUN_COMPLETE', status: 'SUCCESS' });
+    c.finish('SUCCESS');
+
+    const [startRes, attachRes] = await Promise.all([startPromise, attachPromise]);
+    expect(attachRes.status).toBe(200);
+    expect(attachRes.headers.get('content-type')).toBe('text/event-stream');
+    const attachText = await attachRes.text();
+    expect(attachText).toContain('event: NODE_START');
+    expect(attachText).toContain('event: RUN_COMPLETE');
+
+    await startRes.text(); // drain the POST stream too, don't leave it dangling
+    // The GET attach route never called engine.run() itself.
+    expect(engine.runCalls).toHaveLength(1);
+  });
+
+  it('a client disconnect on GET /pipeline/runs/:runId/stream unsubscribes from the engine promptly (#9)', async () => {
+    const { base, engine } = ctx();
+    engine.autoFinish = false;
+
+    const startPromise = fetch(`${base}/pipeline/run/stream`, {
+      method: 'POST',
+      body: JSON.stringify({ pipelineId: 'p1' }),
+    });
+    startPromise.catch(() => undefined);
+    await waitForSubscriber(engine, 'run-1');
+
+    const controller = new AbortController();
+    const attachPromise = fetch(`${base}/pipeline/runs/run-1/stream`, {
+      signal: controller.signal,
+    });
+    attachPromise.catch(() => undefined);
+    await waitForListenerCount(engine, 'run-1', 2); // POST starter + GET attach
+
+    controller.abort();
+
+    for (let i = 0; i < 500 && engine.listenerCount('run-1') > 1; i += 1) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    // Only the POST starter's subscription remains — the GET attach's was
+    // torn down on disconnect instead of surviving until RUN_COMPLETE.
+    expect(engine.listenerCount('run-1')).toBe(1);
+
+    engine.controller('run-1').emit({ kind: 'RUN_COMPLETE', status: 'SUCCESS' });
+    engine.controller('run-1').finish('SUCCESS');
+    await startPromise;
+  });
+
+  it('a client disconnect on POST /pipeline/run/stream stops writes but keeps the run running (fire-and-forget) (#S11c/#E2)', async () => {
+    const { base, engine, server } = ctx();
+    engine.autoFinish = false;
+
+    // Observe the server's own view of the response's `close` event
+    // independently of node-http.ts's internals — a real, deterministic signal
+    // that the underlying connection actually died server-side. `res.on('close')`,
+    // not `req.on('close')`: the REQUEST's own `'close'` fires as soon as its
+    // (tiny, already-fully-read) body finishes, independent of whether the
+    // client is still connected waiting on the response (confirmed
+    // empirically) — `res`'s `'close'` is the one that actually reflects "the
+    // underlying connection for THIS response tore down." A mutable box (not
+    // a plain `let`) avoids TS permanently narrowing the flag to `false`
+    // across the polling loop below, which can't see the closure flipping it.
+    const observed = { serverSawClose: false };
+    server.on('request', (req, res) => {
+      if (req.url === '/pipeline/run/stream') {
+        res.on('close', () => {
+          observed.serverSawClose = true;
+        });
+      }
+    });
+
+    const controller = new AbortController();
+    const fetchPromise = fetch(`${base}/pipeline/run/stream`, {
+      method: 'POST',
+      body: JSON.stringify({ pipelineId: 'p1' }),
+      signal: controller.signal,
+    });
+    // `res.writeHead()` alone doesn't flush headers onto the wire until the
+    // first `write()`/`end()` — since we abort before emitting any event,
+    // `fetchPromise` never settles on its own; don't await it (would hang),
+    // just avoid an unhandled-rejection warning once the abort rejects it.
+    fetchPromise.catch(() => undefined);
+    await waitForSubscriber(engine, 'run-1');
+
+    controller.abort();
+
+    for (let i = 0; i < 500 && !observed.serverSawClose; i += 1) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(observed.serverSawClose).toBe(true);
+
+    // Emitting further events (as the run keeps going) must not throw even
+    // though nobody is listening anymore — the write is guarded, not attempted.
+    expect(() => {
+      engine.controller('run-1').emit({ kind: 'NODE_END', nodeId: 'a', output: {} });
+    }).not.toThrow();
+
+    // Disconnecting must NOT abort the run — fire-and-forget semantics.
+    expect(engine.aborted).toEqual([]);
+    expect(engine.isInFlight('run-1')).toBe(true);
+
+    engine.controller('run-1').emit({ kind: 'RUN_COMPLETE', status: 'SUCCESS' });
+    engine.controller('run-1').finish('SUCCESS');
+    expect(engine.isInFlight('run-1')).toBe(false);
+
+    // The server itself is still healthy afterwards.
+    const health = await fetch(`${base}/pipeline/abc`);
+    expect(health.status).toBe(200);
   });
 
   it('returns 404 for a path outside the base path', async () => {

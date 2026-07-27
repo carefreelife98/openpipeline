@@ -3,6 +3,7 @@ import {
   computeRemainingSchema,
   toPipelineError,
   createCostAccumulator,
+  safeJson,
   PipelineAbortedError,
   PipelineNodeExecutionError,
   NOOP_LOGGER,
@@ -13,6 +14,7 @@ import {
   type NodeEvent,
   type CostBundle,
   type CostAccumulator,
+  type CostGuard,
   type PipelineNodeRow,
   type CompiledNode,
   type LlmFactory,
@@ -37,11 +39,13 @@ export interface NodeRunnerDeps {
 }
 
 /**
- * Per-run AbortSignal arrives via RunnableConfig.configurable (not a closure),
- * because compiled graphs are cached and a closure would leak a stale signal.
+ * Per-run AbortSignal and CostGuard arrive via RunnableConfig.configurable (not
+ * a closure), because compiled graphs are cached and a closure would leak a
+ * stale signal / a stale (or another run's) cost guard into a later run that
+ * hits the same cache entry.
  */
 interface NodeRunnerConfig {
-  configurable?: { signal?: AbortSignal };
+  configurable?: { signal?: AbortSignal; costGuard?: CostGuard };
 }
 
 export type NodeRunnerFn = (
@@ -62,6 +66,7 @@ export function makeNodeRunner(
   ): Promise<Partial<PipelineStateType>> => {
     const s = toPipelineState(state);
     const signal = config?.configurable?.signal;
+    const costGuard = config?.configurable?.costGuard;
 
     const stepId = await deps.stepRecorder.start({
       runId: s.meta.runId,
@@ -73,6 +78,16 @@ export function makeNodeRunner(
     const events: NodeEvent[] = [
       { nodeId: node.id, eventKind: 'NODE_START', timestamp: startedAt, payload: null },
     ];
+    // Hoisted OUTSIDE the try block (not `const` inside it) so a handler that
+    // reports cost and then throws still has that spend visible to the catch's
+    // FAILED finish() below — a failed node's already-consumed resolver/handler
+    // cost must not be silently dropped (#24).
+    const costAcc = createCostAccumulator();
+    // K12 — set (by reference) only on an input-parse failure; see the
+    // `.safeParse` call below for why this is a captured reference rather
+    // than a boolean flag re-derived from `err instanceof z.ZodError` in the
+    // outer catch (an output-parse ZodError would satisfy that too).
+    let inputParseZodError: z.ZodError | undefined;
 
     try {
       checkAbort(signal);
@@ -89,7 +104,6 @@ export function makeNodeRunner(
         .filter(([, b]) => b.kind === 'auto')
         .map(([n]) => n);
 
-      const costAcc = createCostAccumulator();
       let resolved: Record<string, unknown> = explicit;
 
       if (autoSlots.length > 0) {
@@ -123,7 +137,29 @@ export function makeNodeRunner(
       }
 
       checkAbort(signal);
-      const parsed = spec.inputSchema.parse(resolved);
+      // K12 — `.safeParse` (not `.parse` + try/catch) so an input-parse
+      // failure is a *value*, not a thrown exception. This is what lets the
+      // hint be attached to the *derived* PipelineError in the outer catch
+      // (via `inputParseZodError`, checked by reference) rather than by
+      // mutating the caught error: both `@openpipeline/core` and
+      // `@openpipeline/nodes` declare `"zod": "^3.25.32 || ^4.2.0"` as a
+      // peerDependency, and under zod v3 classic `ZodError.prototype.message`
+      // is a getter with no setter — assigning to it (e.g. `err.message =
+      // ...`) throws `TypeError: Cannot set property message ... which has
+      // only a getter` in this package's ESM strict mode, destroying the
+      // original validation error and reclassifying it as RUNTIME. Enriching
+      // `pipelineError.message` in the outer catch (after `toPipelineError`)
+      // keeps classification (`VALIDATION`/`ZOD_PARSE`) unchanged across the
+      // whole zod peer range and never mutates the caught error. Scoped to
+      // this call site only (by reference identity, checked in the outer
+      // catch): an outputSchema.parse failure below is a handler-output bug,
+      // and pointing at input bindings there would mislead (#29).
+      const inputParseResult = spec.inputSchema.safeParse(resolved);
+      if (!inputParseResult.success) {
+        inputParseZodError = inputParseResult.error;
+        throw inputParseResult.error;
+      }
+      const parsed = inputParseResult.data;
 
       checkAbort(signal);
       const ctx = buildExecutionContext(node, state, stepId, deps, costAcc, signal, logger);
@@ -135,12 +171,29 @@ export function makeNodeRunner(
       const finishedAt = new Date().toISOString();
       const totalCost = costAcc.total();
 
+      // #11 — `parsed`/`validatedOutput` are arbitrary handler-produced
+      // values (the input schema and output schema constrain SHAPE, not
+      // JSON-safety: a passthrough/z.any() slot can still carry a circular
+      // reference or a BigInt straight through). This is the step-level
+      // write, which lands BEFORE the run-level terminal write that already
+      // has this same guard (runtime/index.ts) — an adapter that actually
+      // serializes on the way to storage (e.g. Prisma's Json columns) would
+      // otherwise throw HERE first, failing the node (and hence the run)
+      // even though "a circular/BigInt output still completes the run as
+      // SUCCESS" is a guaranteed contract elsewhere. `cost`/`status` are
+      // already well-typed, safe values — no walk needed.
       await deps.stepRecorder.finish(stepId, {
         status: 'SUCCESS',
-        input: parsed,
-        output: validatedOutput,
+        input: safeJson(parsed),
+        output: safeJson(validatedOutput),
         cost: totalCost,
       });
+
+      // Cost cap is a node-*boundary* check (#K9): the node above has already
+      // fully succeeded and billed by the time `check()` can throw, so a trip
+      // here fails the run but never preempts a handler mid-flight.
+      costGuard?.add(totalCost);
+      costGuard?.check();
 
       const meta: NodeMeta = { status: 'SUCCESS', startedAt, finishedAt };
       events.push({ nodeId: node.id, eventKind: 'NODE_END', timestamp: finishedAt, payload: null });
@@ -152,18 +205,52 @@ export function makeNodeRunner(
         events,
       };
     } catch (err) {
-      const pipelineError = toPipelineError(err);
+      let pipelineError = toPipelineError(err);
+      // K12 — attach the state-binding hint here, onto the *derived*
+      // PipelineError, not the caught `err` (see the `.safeParse` call above
+      // for why). Reference-checked against `inputParseZodError` (not a
+      // bare `err instanceof z.ZodError`) so an outputSchema.parse ZodError
+      // never gets it.
+      if (inputParseZodError && err === inputParseZodError) {
+        const hints = Object.entries(node.inputs)
+          .filter(
+            (entry): entry is [string, { kind: 'state'; path: string }] => entry[1].kind === 'state'
+          )
+          .map(([slot, b]) => `"${slot}" ← state 바인딩: ${b.path}`);
+        if (hints.length > 0) {
+          pipelineError = {
+            ...pipelineError,
+            message: `${pipelineError.message}\n(참고 — state 바인딩 슬롯: ${hints.join(', ')})`,
+          };
+        }
+      }
       logger.error(
         `[NodeRunner] node FAILED: ${node.label} (id=${node.id.slice(0, 8)}, key=${node.key}) — ` +
           `${pipelineError.kind}/${pipelineError.code}: ${pipelineError.message.slice(0, 2000)}`
       );
       if (stepId) {
         try {
-          await deps.stepRecorder.finish(stepId, { status: 'FAILED', error: pipelineError });
+          // NB: if `err` came from `costGuard.check()` tripping right after
+          // the SUCCESS `finish()` above, this re-writes that same step to
+          // FAILED. That's intentional, not a double-record bug — the node's
+          // own work genuinely succeeded, but the *run* still fails because
+          // this node's boundary is where the cap was crossed (#K9), and the
+          // step's final status should reflect the run's outcome.
+          await deps.stepRecorder.finish(stepId, {
+            status: 'FAILED',
+            error: pipelineError,
+            cost: costAcc.total(), // 실패 노드도 이미 소비한 resolver/handler 비용은 기록 (#24)
+          });
         } catch (finishErr) {
           logger.warn('[NodeRunner] failed to record FAILED step', { stepId, finishErr });
         }
       }
+      // A failed node may already have spent (via reportCost before it threw)
+      // — that spend is real and must count against the cap too (#24 applies
+      // to the guard, not just the recorded step). Deliberately no `check()`
+      // here: the node already failed for its own reason, and re-checking
+      // could mask that original error behind a cost-cap one.
+      costGuard?.add(costAcc.total());
       throw new PipelineNodeExecutionError(node.id, pipelineError);
     }
   };

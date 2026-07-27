@@ -99,6 +99,76 @@ describe('createBuilderStore', () => {
     });
   });
 
+  describe('removeNode orphan binding prune (#S12)', () => {
+    it('prunes a state binding in another node that references the deleted node', () => {
+      const s = store.getState();
+      s.addNode(node('a'));
+      s.addNode(node('b'));
+      s.updateNodeInput('b', 'text', { kind: 'state', path: 'outputs.a.out' });
+      s.removeNode('a');
+      const b = store.getState().nodes.find((n) => n.id === 'b');
+      expect(b?.inputs['text']).toBeUndefined();
+    });
+
+    it('prunes a bare outputs.<id> binding (no sub-path segment)', () => {
+      const s = store.getState();
+      s.addNode(node('a'));
+      s.addNode(node('b'));
+      s.updateNodeInput('b', 'text', { kind: 'state', path: 'outputs.a' });
+      s.removeNode('a');
+      expect(store.getState().nodes.find((n) => n.id === 'b')?.inputs['text']).toBeUndefined();
+    });
+
+    it('does not prune a binding referencing a different node whose id merely has the deleted id as a string prefix', () => {
+      const s = store.getState();
+      s.addNode(node('ab'));
+      s.addNode(node('c'));
+      s.updateNodeInput('c', 'text', { kind: 'state', path: 'outputs.abc.field' });
+      s.removeNode('ab');
+      // 'outputs.abc.field' must survive: 'abc' !== 'ab', exact path-segment match only.
+      expect(store.getState().nodes.find((n) => n.id === 'c')?.inputs['text']).toEqual({
+        kind: 'state',
+        path: 'outputs.abc.field',
+      });
+    });
+
+    it('leaves non-state bindings (literal/auto) untouched even when their value looks like a matching path', () => {
+      const s = store.getState();
+      s.addNode(node('a'));
+      s.addNode(node('b'));
+      s.updateNodeInput('b', 'lit', { kind: 'literal', value: 'outputs.a.out' });
+      s.updateNodeInput('b', 'auto', { kind: 'auto' });
+      s.removeNode('a');
+      const b = store.getState().nodes.find((n) => n.id === 'b');
+      expect(b?.inputs['lit']).toEqual({ kind: 'literal', value: 'outputs.a.out' });
+      expect(b?.inputs['auto']).toEqual({ kind: 'auto' });
+    });
+
+    it('leaves an untouched node referentially identical (no unnecessary re-render)', () => {
+      const s = store.getState();
+      s.addNode(node('a'));
+      s.addNode(node('b'));
+      s.updateNodeInput('b', 'text', { kind: 'literal', value: 'hi' });
+      const before = store.getState().nodes.find((n) => n.id === 'b');
+      s.removeNode('a');
+      const after = store.getState().nodes.find((n) => n.id === 'b');
+      expect(after).toBe(before);
+    });
+
+    it('prunes matching bindings across every surviving node in one pass', () => {
+      const s = store.getState();
+      s.addNode(node('a'));
+      s.addNode(node('b'));
+      s.addNode(node('c'));
+      s.updateNodeInput('b', 'text', { kind: 'state', path: 'outputs.a.out' });
+      s.updateNodeInput('c', 'text', { kind: 'state', path: 'outputs.a.other' });
+      s.removeNode('a');
+      const nodes = store.getState().nodes;
+      expect(nodes.find((n) => n.id === 'b')?.inputs['text']).toBeUndefined();
+      expect(nodes.find((n) => n.id === 'c')?.inputs['text']).toBeUndefined();
+    });
+  });
+
   describe('addEdge', () => {
     beforeEach(() => {
       store.getState().addNode(node('a'));
@@ -125,6 +195,12 @@ describe('createBuilderStore', () => {
       store.getState().addEdge(edge('t', 'a', 'b', 'true'));
       store.getState().addEdge(edge('f', 'a', 'b', 'false'));
       expect(store.getState().edges.map((e) => e.id)).toEqual(['t', 'f']);
+    });
+
+    it('rejects a self-loop edge (fromNodeId === toNodeId, #S13a) without marking dirty', () => {
+      store.getState().addEdge(edge('self', 'a', 'a'));
+      expect(store.getState().edges).toEqual([]);
+      expect(store.getState().dirty).toBe(false);
     });
   });
 
@@ -330,17 +406,18 @@ describe('createBuilderStore', () => {
       s.setName('Out');
       s.setDescription('d');
       s.addNode(node('a', { positionX: 1, positionY: 2 }));
-      s.addEdge(edge('e', 'a', 'a', 'true'));
+      s.addNode(node('b'));
+      s.addEdge(edge('e', 'a', 'b', 'true'));
 
       const draft = store.getState().toDraft();
       expect(draft.name).toBe('Out');
       expect(draft.description).toBe('d');
-      expect(draft.nodes.map((n) => n.id)).toEqual(['a']);
+      expect(draft.nodes.map((n) => n.id)).toEqual(['a', 'b']);
       expect(draft.nodes[0]).toMatchObject({ positionX: 1, positionY: 2, label: 'a' });
       expect(draft.edges[0]).toMatchObject({
         id: 'e',
         fromNodeId: 'a',
-        toNodeId: 'a',
+        toNodeId: 'b',
         label: 'true',
       });
     });
@@ -357,7 +434,8 @@ describe('createBuilderStore', () => {
 
     it('normalizes an undefined edge label to null in the draft', () => {
       store.getState().addNode(node('a'));
-      store.getState().addEdge(edge('e', 'a', 'a')); // label undefined
+      store.getState().addNode(node('b'));
+      store.getState().addEdge(edge('e', 'a', 'b')); // label undefined
       expect(store.getState().toDraft().edges[0]?.label).toBeNull();
     });
 

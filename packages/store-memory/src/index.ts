@@ -66,8 +66,14 @@ export class MemoryStore implements PipelineStore, StepRecorder {
   private readonly runs = new Map<string, StoredRun>();
   private readonly steps = new Map<string, StoredStep>();
 
-  // Mutex: serialize sequenceIndex assignment per run.
-  private seqLock: Promise<unknown> = Promise.resolve();
+  // Mutex: serialize sequenceIndex assignment, one lock per run (not one
+  // global lock across every run) — a global lock meant `start()`/
+  // `startChild()` calls for an unrelated run B queued behind run A's chain
+  // for no reason, and it also never shrinks: nothing ever removed a run's
+  // place in a single shared promise chain (S5). Keyed by runId so each
+  // run's serialization is independent, and cleaned up in `completeRun`
+  // alongside `seqByRun` once the run reaches a terminal state.
+  private readonly seqLocks = new Map<string, Promise<unknown>>();
   private readonly seqByRun = new Map<string, number>();
 
   // ── PipelineStore ─────────────────────────────────────────────────────────
@@ -83,9 +89,15 @@ export class MemoryStore implements PipelineStore, StepRecorder {
   }
 
   save(draft: PipelineDraft): Promise<string> {
-    const now = new Date();
     const id = draft.id ?? genId('wf');
     const existing = this.pipelines.get(id);
+    // S3 — monotonic updatedAt: two saves landing in the same wall-clock
+    // millisecond (real, on a fast machine or coarse OS clock resolution;
+    // deterministic under frozen/fake timers) must still produce a strictly
+    // later updatedAt than the previous save. A naive `new Date()` here would
+    // let a same-millisecond re-save keep the old updatedAt, so a cache keyed
+    // on it would wrongly treat the change as a stale hit.
+    const now = new Date(Math.max(Date.now(), (existing?.updatedAt.getTime() ?? 0) + 1));
     const pipeline: PipelineRow = {
       id,
       name: draft.name,
@@ -122,14 +134,21 @@ export class MemoryStore implements PipelineStore, StepRecorder {
     return Promise.resolve({ runId, startedAt });
   }
 
-  completeRun(runId: string, result: RunComplete): Promise<void> {
+  completeRun(runId: string, result: RunComplete): Promise<boolean> {
     const run = this.runs.get(runId);
-    if (!run) return Promise.resolve();
+    if (!run || run.status !== 'RUNNING') return Promise.resolve(false);
     run.status = result.status;
     run.output = result.output;
     run.finishedAt = new Date();
     if (result.cost) run.cost = mergeCost(run.cost, result.cost);
-    return Promise.resolve();
+    // S5 — clear both this run's sequence counter and its lock chain so a
+    // finished run leaves nothing behind in either map. Only reached once,
+    // guarded by the `status !== 'RUNNING'` check above (first-terminal-
+    // wins), so this is inherently idempotent — a second completeRun on the
+    // same run returns `false` before ever reaching here.
+    this.seqByRun.delete(runId);
+    this.seqLocks.delete(runId);
+    return Promise.resolve(true);
   }
 
   updateRunCostAtomic(runId: string, delta: CostBundle): Promise<void> {
@@ -222,15 +241,19 @@ export class MemoryStore implements PipelineStore, StepRecorder {
 
   // ── Internals ─────────────────────────────────────────────────────────────
 
-  /** Atomically assign the next sequence index for a run (fan-in safe). */
+  /** Atomically assign the next sequence index for a run (fan-in safe, per-run). */
   private nextSeq(runId: string): Promise<number> {
-    const next = this.seqLock.then(() => {
+    const prev = this.seqLocks.get(runId) ?? Promise.resolve();
+    const next = prev.then(() => {
       const current = this.seqByRun.get(runId) ?? 0;
       this.seqByRun.set(runId, current + 1);
       return current;
     });
-    // Keep the chain alive even if a caller's continuation rejects.
-    this.seqLock = next.catch(() => undefined);
+    // Keep this run's chain alive even if a caller's continuation rejects.
+    this.seqLocks.set(
+      runId,
+      next.catch(() => undefined)
+    );
     return next;
   }
 

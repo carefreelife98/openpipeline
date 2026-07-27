@@ -163,6 +163,9 @@ export function BuilderCanvas(props: BuilderCanvasProps): React.JSX.Element {
   const handleConnect = useCallback(
     (conn: Connection) => {
       if (!conn.source || !conn.target) return;
+      // Reject self-loops before they ever reach the store (#S13a) — same rule
+      // as addEdge, enforced here too so the UI blocks it at connect-time.
+      if (conn.source === conn.target) return;
       // START / END marker connections become start targets / end sources.
       if (conn.source === START_MARKER_ID) {
         addStartTarget(conn.target);

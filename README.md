@@ -11,7 +11,7 @@ It is **headless and unopinionated**: no web framework, no database, no
 multi-tenancy. You bring an LLM provider and (optionally) a persistence backend;
 everything else is an interface you can swap.
 
-> Status: early (`0.1.x`). The headless engine, MCP integration, in-memory and
+> Status: early (`0.2.x`). The headless engine, MCP integration, in-memory and
 > Postgres persistence, an HTTP/SSE server, and a visual React builder are all
 > functional end-to-end (see the playground). Packages are **ESM-only** and
 > require **Node 22.12+**.
@@ -118,6 +118,57 @@ guiding rule: **the kernel depends on interfaces, not frameworks.** No NestJS, n
 Prisma, no proprietary libraries in the core packages — verified by the dependency
 tree (only `@langchain/*` + `zod`).
 
+### Engine options (operational safety)
+
+`PipelineEngine` constructor options that guard a run against runaway cost, an
+unbounded graph loop, or a hung wall clock — all optional, all off/unlimited by
+default so a minimal `new PipelineEngine({ store, llmFactory })` keeps working:
+
+| Option           | Type     | Default                 | Behavior                                                                                                                                                                                                                                                                                                                                                                |
+| ---------------- | -------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `costCapUsd`     | `number` | `undefined` (unlimited) | Per-run USD spend cap, checked **at node boundaries** (right after each node's SUCCESS step finishes) — not a mid-handler preemption, so the node that crosses the cap has already billed. A run that exceeds it fails with `error.kind: 'COST_CAP'`. A conservative starting point for most single-user pipelines is 1–5 USD/run; tune to your nodes' actual LLM cost. |
+| `recursionLimit` | `number` | `100`                   | Max LangGraph super-steps per run. A graph that needs more (e.g. a long linear chain, or a loop) throws `GraphRecursionError`, surfaced as a FAILED run with `error.code: 'RECURSION_LIMIT'` instead of an opaque runtime error.                                                                                                                                        |
+| `runTimeoutMs`   | `number` | `600_000` (10 min)      | Hard per-run wall-clock timeout — the run is aborted once it elapses. **Pass `0` to disable the timeout entirely** (no timer is armed at all; this is not "a 0ms timeout").                                                                                                                                                                                             |
+
+```ts
+const engine = new PipelineEngine({
+  store,
+  llmFactory,
+  costCapUsd: 2, // fail the run rather than silently overspend
+  recursionLimit: 50, // catch a runaway/looping graph early
+  runTimeoutMs: 0, // e.g. a long-running batch job with no engine-level deadline
+});
+```
+
+### Observability
+
+`PipelineEngine` (and the node-runner / binding resolver it drives) accepts an
+optional `logger: Logger` — a plain `{ info, warn, error, debug }` interface, so
+any logging library adapts trivially. **The default is `NOOP_LOGGER` — silent, by
+design** (a library shouldn't write to stdout/your log sink unasked). This is
+deliberately unchanged in `0.2.0`.
+
+That silence has a real cost, though: several of the hardening fixes in this
+release only surface via `logger.warn`/`logger.error` — a lost first-terminal-wins
+race (`completeRun` returning `false`), a store failure isolated from a genuinely
+successful run's terminal write, a late/direct `onEvent` subscribe on a
+non-in-flight run, or an MCP `$ref` circularity truncation. Without a real logger
+wired in, these degrade silently instead of loudly. **Inject a real `Logger` in
+production**:
+
+```ts
+const engine = new PipelineEngine({
+  store,
+  llmFactory,
+  logger: {
+    info: (msg, meta) => myLogger.info(msg, meta),
+    warn: (msg, meta) => myLogger.warn(msg, meta),
+    error: (msg, meta) => myLogger.error(msg, meta),
+    debug: (msg, meta) => myLogger.debug(msg, meta),
+  },
+});
+```
+
 ### MCP tools
 
 ```ts
@@ -178,14 +229,20 @@ import { createPipelineHandlers, createNodeHttpHandler } from '@openpipeline/ser
 const handlers = createPipelineHandlers(engine);
 createServer(createNodeHttpHandler(handlers)).listen(3000);
 // POST /pipeline, GET /pipeline/:id, GET /pipeline/:id/runs,
-// POST /pipeline/run, GET /pipeline/runs/:runId/stream?pipelineId=... (SSE)
+// POST /pipeline/run (non-streaming), POST /pipeline/run/stream (starts a run
+// and streams it, SSE), GET /pipeline/runs/:runId/stream (attach to an
+// already in-flight run's SSE stream; 404 if it's unknown or has finished —
+// it never starts a run), POST /pipeline/run/:runId/abort (404 if unknown/finished)
 ```
 
 `PipelineHandlers` are plain async functions with no framework dependency — mount
 them into Express/Fastify/Hono, or use the bundled Node `http` adapter. Live run
 events (`NODE_START` / `NODE_END` / `RUN_COMPLETE`, with node output + timing) are
 streamed via SSE — the engine drives them from LangGraph `streamEvents`, and you
-can also subscribe directly with `engine.onEvent(runId, listener)`.
+can also subscribe directly with `engine.onEvent(runId, listener)`. Passing
+`onEvent` straight into `engine.run(opts)` (or using `runAndStream`) registers
+the listener before the run starts executing, so no events from the very start
+of the run are missed.
 
 ### Visual builder (React)
 

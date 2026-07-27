@@ -1,6 +1,6 @@
 import type { CostBundle, PipelineDraft, RunDeliveryMode, StepFinish } from '@openpipeline/core';
 import { ZERO_COST } from '@openpipeline/core';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PrismaPipelineStore } from '../src/index.js';
 import type { PrismaClientLike } from '../src/prisma-types.js';
@@ -69,18 +69,43 @@ function createFakePrisma(): FakePrisma {
   const rowId = (candidate: unknown, table: TableName): string =>
     typeof candidate === 'string' ? candidate : id(table);
 
+  // `pipelineNode.id` is a real global primary key in schema.prisma — not
+  // scoped per pipeline. A create/createMany that supplies an id already
+  // present in the table (belonging to ANY pipeline, including a different
+  // one) collides on that PK. Real Prisma surfaces this as a P2002 unique-
+  // constraint violation; simulate that here so a test against this fake can
+  // tell the difference between "the store pre-empted the clash with a clear
+  // ownership error" and "the store let it fall through to a confusing P2002"
+  // (S4/#10) — matching real Postgres behavior instead of silently
+  // overwriting the row via `Map.set`.
+  const rejectIfNodeIdTaken = (rid: string): void => {
+    if (tables.pipelineNode.has(rid)) {
+      throw new Error(
+        `Unique constraint failed on the fields: (\`id\`) [P2002] — pipelineNode id "${rid}" already exists`
+      );
+    }
+  };
+
   const delegate = (name: TableName): PrismaClientLike[TableName] => {
     const t = tables[name];
     return {
       create: <TRow extends { id: string }>({ data }: { data: object }): Promise<TRow> => {
         const d = data as Row;
         const rid = rowId(d.id, name);
+        if (name === 'pipelineNode') rejectIfNodeIdTaken(rid);
         const row: Row = {
           ...d,
           id: rid,
           startedAt: new Date(),
           sequenceIndex: d.sequenceIndex ?? 0,
         };
+        // Simulate schema.prisma's `@default(now())` / `@updatedAt` on the
+        // `pipeline` model (#12) — a real Prisma client auto-populates both
+        // on create unless the caller supplies its own value.
+        if (name === 'pipeline') {
+          row.createdAt ??= new Date();
+          row.updatedAt ??= new Date();
+        }
         t.set(rid, row);
         return Promise.resolve(row as unknown as TRow);
       },
@@ -93,6 +118,7 @@ function createFakePrisma(): FakePrisma {
         for (const d0 of data) {
           const d = d0 as Row;
           const rid = rowId(d.id, name);
+          if (name === 'pipelineNode') rejectIfNodeIdTaken(rid);
           t.set(rid, { ...d, id: rid });
         }
         return Promise.resolve({ count: data.length });
@@ -161,6 +187,12 @@ function createFakePrisma(): FakePrisma {
       }): Promise<TRow> => {
         const rid = (where as { id: string }).id;
         const row = { ...t.get(rid), ...data, id: rid } as Row;
+        // Simulate `@updatedAt` on the `pipeline` model (#12): auto-bump
+        // UNLESS the caller explicitly supplied `updatedAt` (real Prisma
+        // behavior — an explicit value always wins over the auto-timestamp).
+        if (name === 'pipeline' && !('updatedAt' in (data as Row))) {
+          row.updatedAt = new Date();
+        }
         t.set(rid, row);
         return Promise.resolve(row as unknown as TRow);
       },
@@ -497,6 +529,124 @@ describe('PrismaPipelineStore.save — diff update path', () => {
   });
 });
 
+describe('PrismaPipelineStore.save — monotonic updatedAt on update (#12/S3)', () => {
+  it('strictly bumps updatedAt forward across two updates landing in the same wall-clock millisecond', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+    const id = await store.save(draft({ name: 'v1' }));
+    const afterCreate = fake.tables.pipeline.get(id)?.updatedAt as Date;
+
+    // Pin Date.now() so both updates land in the SAME millisecond — the
+    // exact scenario a naive `@updatedAt` auto-timestamp collides on.
+    const frozen = afterCreate.getTime();
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(frozen);
+    try {
+      await store.save(draft({ id, name: 'v2' }));
+      const afterFirstUpdate = fake.tables.pipeline.get(id)?.updatedAt as Date;
+      await store.save(draft({ id, name: 'v3' }));
+      const afterSecondUpdate = fake.tables.pipeline.get(id)?.updatedAt as Date;
+
+      expect(afterFirstUpdate.getTime()).toBeGreaterThan(afterCreate.getTime());
+      expect(afterSecondUpdate.getTime()).toBeGreaterThan(afterFirstUpdate.getTime());
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('produces a distinct compiler cache key across two same-millisecond updates', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+    const id = await store.save(draft({ name: 'v1' }));
+    const first = await store.load(id);
+
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(first.pipeline.updatedAt.getTime());
+    try {
+      await store.save(draft({ id, name: 'v2' }));
+      const second = await store.load(id);
+
+      const keyOf = (updatedAt: Date): string => `${id}:${String(updatedAt.getTime())}`;
+      expect(keyOf(second.pipeline.updatedAt)).not.toBe(keyOf(first.pipeline.updatedAt));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe('PrismaPipelineStore.save — cross-pipeline node id ownership guard (S4/#10)', () => {
+  it('rejects a client-supplied node id belonging to ANOTHER pipeline on create, with a clear ownership error', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+    // Seed a node that already belongs to a different pipeline.
+    fake.tables.pipelineNode.set('shared-id', {
+      id: 'shared-id',
+      pipelineId: 'someone-elses-pipeline',
+      nodeType: 'TOOL',
+      key: 'tool.x',
+      label: 'X',
+      inputs: {},
+      isDeleted: false,
+    });
+
+    await expect(
+      store.save({
+        name: 'new-pipeline',
+        nodes: [{ id: 'shared-id', nodeType: 'TOOL', key: 'tool.x', label: 'X', inputs: {} }],
+        edges: [],
+      })
+    ).rejects.toThrow(/belongs? to another pipeline/i);
+    // Never the raw, undiagnostic Prisma P2002 message.
+    await expect(
+      store.save({
+        name: 'new-pipeline-2',
+        nodes: [{ id: 'shared-id', nodeType: 'TOOL', key: 'tool.x', label: 'X', inputs: {} }],
+        edges: [],
+      })
+    ).rejects.not.toThrow(/P2002/);
+  });
+
+  it('rejects a client-supplied node id belonging to ANOTHER pipeline on update', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+    const id = await store.save(draft()); // pipeline with n1, n2
+    fake.tables.pipelineNode.set('foreign-node', {
+      id: 'foreign-node',
+      pipelineId: 'someone-elses-pipeline',
+      nodeType: 'TOOL',
+      key: 'tool.x',
+      label: 'X',
+      inputs: {},
+      isDeleted: false,
+    });
+
+    await expect(
+      store.save({
+        id,
+        name: 'updated',
+        nodes: [
+          {
+            id: 'n1',
+            nodeType: 'TOOL',
+            key: 'tool.double',
+            label: 'Double',
+            inputs: { n: { kind: 'literal', value: 21 } },
+          },
+          { id: 'foreign-node', nodeType: 'TOOL', key: 'tool.x', label: 'X', inputs: {} },
+        ],
+        edges: [],
+      })
+    ).rejects.toThrow(/belongs? to another pipeline/i);
+  });
+
+  it('allows re-saving a draft whose node ids already belong to THIS SAME pipeline (own ids are not foreign)', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+    const id = await store.save(draft());
+
+    // Re-save with the same node ids — must not be misclassified as foreign.
+    await expect(store.save(draft({ id, name: 'renamed' }))).resolves.toBe(id);
+  });
+});
+
 describe('PrismaPipelineStore.load', () => {
   it('round-trips a saved pipeline into a PipelineWithGraph', async () => {
     const fake = createFakePrisma();
@@ -697,6 +847,30 @@ describe('PrismaPipelineStore.createRun / completeRun', () => {
     await store.completeRun(runId, { status: 'SUCCESS', cost });
 
     expect(fake.tables.pipelineRun.get(runId)?.cost).toEqual(cost);
+  });
+});
+
+describe('PrismaPipelineStore.completeRun first-terminal-wins', () => {
+  it('returns true on first terminal transition, false and no-op on second', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+    const { runId } = await store.createRun({ pipelineId: 'p1', deliveryMode: STREAM });
+
+    const first = await store.completeRun(runId, { status: 'SUCCESS', output: { a: 1 } });
+    const second = await store.completeRun(runId, { status: 'FAILED' });
+
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+    // FAILED로 역전되지 않음 — the guarded updateMany's where.status filter
+    // rejects the second write once the run is already terminal.
+    expect(fake.tables.pipelineRun.get(runId)?.status).toBe('SUCCESS');
+  });
+
+  it('is a no-op (returns false) for an unknown runId', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+
+    await expect(store.completeRun('ghost', { status: 'FAILED' })).resolves.toBe(false);
   });
 });
 
@@ -906,6 +1080,66 @@ describe('PrismaPipelineStore step sequencing (StepRecorder)', () => {
     const row = fake.tables.pipelineRunStep.get(stepId);
     expect(row?.nodeLabel).toBe('Pretty Label');
     expect(row?.parentStepId).toBeNull();
+  });
+});
+
+describe('PrismaPipelineStore.serializeByRun — unhandled rejection guard (critical)', () => {
+  // The per-run queue promise stashed in `startQueues` must never surface as
+  // an unhandled rejection, even when the LAST start()/startChild() call for
+  // a run rejects and the caller DOES catch the promise `start()` itself
+  // returns — the map-stored derived promise is a separate object that
+  // nothing else ever attaches a handler to. Without the fix this reliably
+  // fires Node's `unhandledRejection` (and, outside a test harness that
+  // intercepts it, `--unhandled-rejections=throw` kills the process).
+  it('does not leave an unhandled rejection when the underlying create() rejects, even though the caller awaits/catches its own promise', async () => {
+    const fake = createFakePrisma();
+    fake.client.pipelineRunStep.create = () => Promise.reject(new Error('db exploded'));
+    const store = new PrismaPipelineStore(fake.client);
+
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandledRejection);
+
+    try {
+      await expect(store.start({ runId: 'r1', nodeId: 'n1', nodeLabel: 'A' })).rejects.toThrow(
+        'db exploded'
+      );
+      // Let Node's unhandled-rejection detector (which runs after the
+      // microtask queue drains, on a later turn of the event loop) get a
+      // chance to fire before asserting nothing was reported.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+    }
+
+    expect(unhandled).toEqual([]);
+  });
+
+  it('still serializes subsequent start() calls correctly after a prior call in the same run rejected', async () => {
+    const fake = createFakePrisma();
+    let failNext = true;
+    const originalCreate = fake.client.pipelineRunStep.create.bind(fake.client.pipelineRunStep);
+    fake.client.pipelineRunStep.create = <TRow extends { id: string }>(args: {
+      data: object;
+    }): Promise<TRow> => {
+      if (failNext) {
+        failNext = false;
+        return Promise.reject(new Error('first call fails'));
+      }
+      return originalCreate<TRow>(args);
+    };
+    const store = new PrismaPipelineStore(fake.client);
+
+    await expect(store.start({ runId: 'r1', nodeId: 'n0', nodeLabel: 'Zero' })).rejects.toThrow(
+      'first call fails'
+    );
+    const stepId = await store.start({ runId: 'r1', nodeId: 'n1', nodeLabel: 'A' });
+
+    const row = fake.tables.pipelineRunStep.get(stepId);
+    expect(row?.sequenceIndex).toBe(0);
   });
 });
 

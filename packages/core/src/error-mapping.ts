@@ -1,11 +1,15 @@
 import { z } from 'zod';
 
+import { PipelineCostCapError } from './cost-guard.js';
 import type { PipelineError } from './state.js';
 
 /** Normalize any thrown value into a structured PipelineError. */
 export function toPipelineError(err: unknown): PipelineError {
   if (err instanceof z.ZodError) {
     return { kind: 'VALIDATION', code: 'ZOD_PARSE', message: err.message };
+  }
+  if (err instanceof PipelineCostCapError) {
+    return { kind: 'COST_CAP', code: 'COST_CAP', message: err.message };
   }
   if (err instanceof Error) {
     if (err.name === 'AbortError' || /aborted/i.test(err.message)) {

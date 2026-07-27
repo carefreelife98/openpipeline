@@ -25,7 +25,7 @@ export type ConversionFailureReason = {
 };
 
 export type McpSchemaConversionResult =
-  | { success: true; zodSchema: z.ZodType }
+  | { success: true; zodSchema: z.ZodType; hadCircularRef?: boolean }
   | { success: false; reason: ConversionFailureReason };
 
 export interface ConvertOptions {
@@ -33,10 +33,22 @@ export interface ConvertOptions {
   toolName: string;
 }
 
-/** Inline all `$ref`s via a full-path JSON Pointer resolver. Circular-safe via a visited set. */
-function dereferenceAllRefs(schema: unknown): unknown {
-  if (!schema || typeof schema !== 'object') return schema;
+/** Result of dereferencing: the inlined schema plus whether a cycle was truncated. */
+interface DereferenceResult {
+  schema: unknown;
+  hadCircularRef: boolean;
+}
+
+/**
+ * Inline all `$ref`s via a full-path JSON Pointer resolver. Circular-safe via a
+ * visited set — a cycle truncates to `{ type: 'object' }` (zod cannot express
+ * recursive types via `fromJSONSchema`) and sets `hadCircularRef: true` so the
+ * caller can surface the loss instead of hiding it (Mate-X #17 semantics).
+ */
+function dereferenceAllRefs(schema: unknown): DereferenceResult {
+  if (!schema || typeof schema !== 'object') return { schema, hadCircularRef: false };
   const root = schema as Record<string, unknown>;
+  let hadCircularRef = false;
 
   const resolvePath = (path: string): unknown => {
     if (!path.startsWith('#/')) return null;
@@ -56,7 +68,10 @@ function dereferenceAllRefs(schema: unknown): unknown {
     const obj = node as Record<string, unknown>;
     if (typeof obj.$ref === 'string') {
       const refPath = obj.$ref;
-      if (visited.has(refPath)) return { type: 'object' };
+      if (visited.has(refPath)) {
+        hadCircularRef = true;
+        return { type: 'object' };
+      }
       const resolved = resolvePath(refPath);
       if (resolved && typeof resolved === 'object') {
         const newVisited = new Set(visited);
@@ -75,7 +90,8 @@ function dereferenceAllRefs(schema: unknown): unknown {
     return result;
   };
 
-  return visit(root, new Set());
+  const inlined = visit(root, new Set());
+  return { schema: inlined, hadCircularRef };
 }
 
 /** Force `type: 'object'` at the root when a provider omits it but supplies object-ish keywords. */
@@ -107,9 +123,18 @@ export class McpSchemaConverter {
     // The normalizers operate on `unknown` arbitrary input but, by contract, this
     // method receives a tool's JSON Schema — assert to the concrete JSON Schema
     // shape so `fromJSONSchema` (which itself throws on unsupported keywords) types.
-    const derefed = ensureRootObjectType(dereferenceAllRefs(jsonSchema)) as JSONSchema.JSONSchema;
+    const { schema: derefedSchema, hadCircularRef } = dereferenceAllRefs(jsonSchema);
+    const derefed = ensureRootObjectType(derefedSchema) as JSONSchema.JSONSchema;
     try {
       const zodSchema = fromJSONSchema(derefed);
+      if (hadCircularRef) {
+        // Truncation stays (circular types are inexpressible via fromJSONSchema) —
+        // the fix is surfacing the loss, not removing it (Mate-X #17 semantics).
+        this.logger.warn(
+          `[mcp-schema-conversion] ${opts.providerKey}/${opts.toolName}: circular $ref truncated to {} — converted schema is lossy`
+        );
+        return { success: true, zodSchema, hadCircularRef: true };
+      }
       return { success: true, zodSchema };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
