@@ -5,8 +5,10 @@ import {
   PipelineCompileError,
   type PipelineWithGraph,
   type CompiledNode,
+  type NodeSpec,
 } from '@openpipeline/core';
 
+import { validateGraph, toCompiledNodeMap } from './graph-validator.js';
 import { makeNodeRunner, type NodeRunnerDeps } from './node-runner.js';
 import type { NodeSpecRegistry, NodeResolveContext } from './registry.js';
 
@@ -89,23 +91,39 @@ export class PipelineCompiler {
     const entryNodeIds = topo.entryNodes.map((n) => n.id);
     const exitNodeIds = topo.exitNodes.map((n) => n.id);
 
-    // Build the node map first (resolve all specs in parallel) so runners can
-    // reference the complete map. MCP nodes resolve via the registry's resolver.
-    const nodeMap = new Map<string, CompiledNode>();
+    // Resolve every node's spec in parallel first (MCP nodes resolve via the
+    // registry's resolver). `specByNodeId` is keyed by nodeId (not by `key`) —
+    // an `mcp:` node's spec depends on the per-run catalog cache, so two nodes
+    // sharing a key could resolve to different specs.
     const resolved = await Promise.all(
       graph.nodes.map(async (wfNode) => ({
         wfNode,
         spec: await this.deps.registry.get(wfNode.key, ctx),
       }))
     );
-    for (const { wfNode, spec } of resolved) {
-      nodeMap.set(wfNode.id, {
-        node: wfNode,
-        spec,
-        predecessors: topo.predecessorsByNode.get(wfNode.id) ?? [],
-        successors: topo.successorsByNode.get(wfNode.id) ?? [],
-      });
+    const specByNodeId = new Map<string, NodeSpec>(
+      resolved.map(({ wfNode, spec }) => [wfNode.id, spec])
+    );
+
+    // Default-ON compile-time validation: downstream cycles, unreachable
+    // nodes, persisted nodeType vs. resolved spec mismatches, required input
+    // slots with no binding, and dead/non-ancestor state references
+    // (#K6,#K7,#K8,#K14). Same compile-failure pathway as TOPOLOGY_NO_ENTRY /
+    // IF_MISSING_BRANCH below — the engine's run() catch treats any thrown
+    // Error here as a FAILED compile, no new error class needed. The consumer
+    // `validate` hook above runs as *additional* validation, not a replacement.
+    const issues = validateGraph(graph, specByNodeId);
+    if (issues.length > 0) {
+      throw new Error(
+        `Pipeline graph validation failed (${String(issues.length)}): ` +
+          issues.map((i) => `[${i.code}] ${i.message}`).join('; ')
+      );
     }
+
+    // Build the node map runners reference, reusing the same construction
+    // `validateGraph` uses internally for ancestor checks (DRY) — pass the
+    // already-computed `topo` so it isn't recomputed a second time here.
+    const nodeMap: Map<string, CompiledNode> = toCompiledNodeMap(graph, specByNodeId, topo);
 
     const stateGraph = new StateGraph(PipelineStateAnnotation);
     const runnerDeps: NodeRunnerDeps = {

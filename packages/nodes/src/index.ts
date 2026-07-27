@@ -10,6 +10,7 @@ export {
 export { makeNodeRunner, type NodeRunnerFn, type NodeRunnerDeps } from './node-runner.js';
 export { PipelineCompiler, type CompilerDeps, type CompiledPipeline } from './compiler.js';
 export { translateEvent, type LangGraphStreamEvent } from './event-translator.js';
+export { validateGraph, toCompiledNodeMap, type GraphValidationIssue } from './graph-validator.js';
 
 // Built-in node specs
 export {
