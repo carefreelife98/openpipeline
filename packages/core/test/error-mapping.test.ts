@@ -1,9 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 
+import { PipelineCostCapError } from '../src/cost-guard.js';
 import { toPipelineError, computeRemainingSchema } from '../src/error-mapping.js';
 
 describe('toPipelineError', () => {
+  it('maps a PipelineCostCapError to a COST_CAP error', () => {
+    const err = new PipelineCostCapError(6, 5);
+    const result = toPipelineError(err);
+    expect(result.kind).toBe('COST_CAP');
+    expect(result.code).toBe('COST_CAP');
+    expect(result.message).toBe(err.message);
+  });
+
   it('maps a ZodError to a VALIDATION error', () => {
     const parsed = z.object({ n: z.number() }).safeParse({ n: 'nope' });
     if (parsed.success) throw new Error('expected the parse to fail');

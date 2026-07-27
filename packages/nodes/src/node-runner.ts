@@ -13,6 +13,7 @@ import {
   type NodeEvent,
   type CostBundle,
   type CostAccumulator,
+  type CostGuard,
   type PipelineNodeRow,
   type CompiledNode,
   type LlmFactory,
@@ -37,11 +38,13 @@ export interface NodeRunnerDeps {
 }
 
 /**
- * Per-run AbortSignal arrives via RunnableConfig.configurable (not a closure),
- * because compiled graphs are cached and a closure would leak a stale signal.
+ * Per-run AbortSignal and CostGuard arrive via RunnableConfig.configurable (not
+ * a closure), because compiled graphs are cached and a closure would leak a
+ * stale signal / a stale (or another run's) cost guard into a later run that
+ * hits the same cache entry.
  */
 interface NodeRunnerConfig {
-  configurable?: { signal?: AbortSignal };
+  configurable?: { signal?: AbortSignal; costGuard?: CostGuard };
 }
 
 export type NodeRunnerFn = (
@@ -62,6 +65,7 @@ export function makeNodeRunner(
   ): Promise<Partial<PipelineStateType>> => {
     const s = toPipelineState(state);
     const signal = config?.configurable?.signal;
+    const costGuard = config?.configurable?.costGuard;
 
     const stepId = await deps.stepRecorder.start({
       runId: s.meta.runId,
@@ -127,7 +131,30 @@ export function makeNodeRunner(
       }
 
       checkAbort(signal);
-      const parsed = spec.inputSchema.parse(resolved);
+      let parsed: unknown;
+      try {
+        parsed = spec.inputSchema.parse(resolved);
+      } catch (err) {
+        // K12 — enrich a *input*-parse ZodError (message-only) with the
+        // state-bound slot(s) that fed it, so the failure points at the
+        // upstream binding instead of a bare Zod issue. Scoped to this call
+        // site only: an outputSchema.parse failure below is a handler-output
+        // bug, and pointing at input bindings there would mislead (#29).
+        // Classification is unchanged — still a `z.ZodError`, still mapped to
+        // VALIDATION/ZOD_PARSE by `toPipelineError` below.
+        if (err instanceof z.ZodError) {
+          const hints = Object.entries(node.inputs)
+            .filter(
+              (entry): entry is [string, { kind: 'state'; path: string }] =>
+                entry[1].kind === 'state'
+            )
+            .map(([slot, b]) => `"${slot}" ← state 바인딩: ${b.path}`);
+          if (hints.length > 0) {
+            err.message = `${err.message}\n(참고 — state 바인딩 슬롯: ${hints.join(', ')})`;
+          }
+        }
+        throw err;
+      }
 
       checkAbort(signal);
       const ctx = buildExecutionContext(node, state, stepId, deps, costAcc, signal, logger);
@@ -146,6 +173,12 @@ export function makeNodeRunner(
         cost: totalCost,
       });
 
+      // Cost cap is a node-*boundary* check (#K9): the node above has already
+      // fully succeeded and billed by the time `check()` can throw, so a trip
+      // here fails the run but never preempts a handler mid-flight.
+      costGuard?.add(totalCost);
+      costGuard?.check();
+
       const meta: NodeMeta = { status: 'SUCCESS', startedAt, finishedAt };
       events.push({ nodeId: node.id, eventKind: 'NODE_END', timestamp: finishedAt, payload: null });
 
@@ -163,6 +196,12 @@ export function makeNodeRunner(
       );
       if (stepId) {
         try {
+          // NB: if `err` came from `costGuard.check()` tripping right after
+          // the SUCCESS `finish()` above, this re-writes that same step to
+          // FAILED. That's intentional, not a double-record bug — the node's
+          // own work genuinely succeeded, but the *run* still fails because
+          // this node's boundary is where the cap was crossed (#K9), and the
+          // step's final status should reflect the run's outcome.
           await deps.stepRecorder.finish(stepId, {
             status: 'FAILED',
             error: pipelineError,
@@ -172,6 +211,12 @@ export function makeNodeRunner(
           logger.warn('[NodeRunner] failed to record FAILED step', { stepId, finishErr });
         }
       }
+      // A failed node may already have spent (via reportCost before it threw)
+      // — that spend is real and must count against the cap too (#24 applies
+      // to the guard, not just the recorded step). Deliberately no `check()`
+      // here: the node already failed for its own reason, and re-checking
+      // could mask that original error behind a cost-cap one.
+      costGuard?.add(costAcc.total());
       throw new PipelineNodeExecutionError(node.id, pipelineError);
     }
   };

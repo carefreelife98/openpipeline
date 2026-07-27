@@ -1,3 +1,5 @@
+import { getEventListeners } from 'node:events';
+
 import { defineNode } from '@openpipeline/core';
 import { createIfNodeSpec, createLlmInvokeNodeSpec } from '@openpipeline/nodes';
 import { MemoryStore } from '@openpipeline/store-memory';
@@ -5,6 +7,51 @@ import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 
 import { PipelineEngine } from '@openpipeline/runtime';
+
+function costNodeSpec(key: string, dollars: number) {
+  return defineNode({
+    key,
+    nodeType: 'TOOL' as const,
+    displayName: key,
+    description: 'Reports a fixed dollar cost.',
+    icon: 'x',
+    inputSchema: z.object({}),
+    outputSchema: z.object({ kind: z.literal(key) }),
+    handler: (_i, ctx) => {
+      ctx.reportCost({ tokens: { input: 0, output: 0, total: 0 }, dollars, llmCalls: 1 });
+      return Promise.resolve({ kind: key });
+    },
+  });
+}
+
+function passNodeSpec(key: string) {
+  return defineNode({
+    key,
+    nodeType: 'TOOL' as const,
+    displayName: key,
+    description: 'No-op pass-through node.',
+    icon: 'x',
+    inputSchema: z.object({}),
+    outputSchema: z.object({ kind: z.literal(key) }),
+    handler: () => Promise.resolve({ kind: key }),
+  });
+}
+
+function slowNodeSpec(key: string, delayMs: number) {
+  return defineNode({
+    key,
+    nodeType: 'TOOL' as const,
+    displayName: key,
+    description: 'Resolves after a real macrotask delay.',
+    icon: 'x',
+    inputSchema: z.object({}),
+    outputSchema: z.object({ kind: z.literal(key) }),
+    handler: async () => {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      return { kind: key };
+    },
+  });
+}
 
 // End-to-end integration test against the BUILT packages (run `pnpm build`
 // first — CI builds before test). Exercises save -> run -> done through the
@@ -330,5 +377,130 @@ describe('PipelineEngine end-to-end', () => {
     expect(engine.isInFlight(runId)).toBe(false);
     // Finished run: abort is now a no-op too.
     expect(engine.abort(runId)).toBe(false);
+  });
+
+  it('aborts the run with COST_CAP when accumulated dollars exceed costCapUsd', async () => {
+    // Two $3 nodes chained, costCapUsd: 5 — the cap trips at the 2nd node's
+    // boundary (3 -> ok, 3+3=6 > 5 -> COST_CAP), after that node has already
+    // succeeded and billed (#K9 — node-boundary cap, not mid-handler preemption).
+    const store = new MemoryStore();
+    const completeRunSpy = vi.spyOn(store, 'completeRun');
+    const engine = new PipelineEngine({ store, llmFactory: stubLlmFactory, costCapUsd: 5 });
+    engine.registerNode(costNodeSpec('tool.cost3.a', 3));
+    engine.registerNode(costNodeSpec('tool.cost3.b', 3));
+
+    const pipelineId = await engine.save({
+      name: 'cost-cap',
+      nodes: [
+        { id: 'a', nodeType: 'TOOL', key: 'tool.cost3.a', label: 'A', inputs: {} },
+        { id: 'b', nodeType: 'TOOL', key: 'tool.cost3.b', label: 'B', inputs: {} },
+      ],
+      edges: [{ id: 'e1', fromNodeId: 'a', toNodeId: 'b' }],
+    });
+
+    const { runId, done } = await engine.run({ pipelineId });
+    const result = await done;
+
+    expect(result.status).toBe('FAILED');
+    expect(result.error?.kind).toBe('COST_CAP');
+
+    const call = completeRunSpy.mock.calls.find(([id]) => id === runId);
+    expect(call?.[1].error?.kind).toBe('COST_CAP');
+    expect(call?.[1].error?.code).toBe('COST_CAP');
+  });
+
+  it('runs to SUCCESS when accumulated dollars stay within costCapUsd', async () => {
+    const engine = new PipelineEngine({
+      store: new MemoryStore(),
+      llmFactory: stubLlmFactory,
+      costCapUsd: 100,
+    });
+    engine.registerNode(costNodeSpec('tool.cost3.c', 3));
+
+    const pipelineId = await engine.save({
+      name: 'under-cap',
+      nodes: [{ id: 'a', nodeType: 'TOOL', key: 'tool.cost3.c', label: 'A', inputs: {} }],
+      edges: [],
+    });
+
+    const result = await (await engine.run({ pipelineId })).done;
+    expect(result.status).toBe('SUCCESS');
+  });
+
+  it('classifies GraphRecursionError as RECURSION_LIMIT (recursionLimit: 2, 3-node linear chain)', async () => {
+    const store = new MemoryStore();
+    const completeRunSpy = vi.spyOn(store, 'completeRun');
+    const engine = new PipelineEngine({ store, llmFactory: stubLlmFactory, recursionLimit: 2 });
+    engine.registerNode(passNodeSpec('tool.pass'));
+
+    const pipelineId = await engine.save({
+      name: 'linear-3',
+      nodes: [
+        { id: 'a', nodeType: 'TOOL', key: 'tool.pass', label: 'A', inputs: {} },
+        { id: 'b', nodeType: 'TOOL', key: 'tool.pass', label: 'B', inputs: {} },
+        { id: 'c', nodeType: 'TOOL', key: 'tool.pass', label: 'C', inputs: {} },
+      ],
+      edges: [
+        { id: 'e1', fromNodeId: 'a', toNodeId: 'b' },
+        { id: 'e2', fromNodeId: 'b', toNodeId: 'c' },
+      ],
+    });
+
+    const { runId, done } = await engine.run({ pipelineId });
+    const result = await done;
+
+    expect(result.status).toBe('FAILED');
+    const call = completeRunSpy.mock.calls.find(([id]) => id === runId);
+    expect(call?.[1].error?.code).toBe('RECURSION_LIMIT');
+  });
+
+  it('runTimeoutMs: 0 disables the wall-clock timeout (old bug: `setTimeout(abort, 0)` fired almost immediately)', async () => {
+    const engine = new PipelineEngine({
+      store: new MemoryStore(),
+      llmFactory: stubLlmFactory,
+      runTimeoutMs: 0,
+    });
+    // A real (short) macrotask delay: with the old `?? 600_000` + always-armed
+    // timer, `runTimeoutMs: 0` survives the `??` (0 is not nullish) and arms a
+    // 0ms timer that fires long before this delay elapses, aborting the run.
+    engine.registerNode(slowNodeSpec('tool.slow', 20));
+
+    const pipelineId = await engine.save({
+      name: 'no-timeout',
+      nodes: [{ id: 'a', nodeType: 'TOOL', key: 'tool.slow', label: 'A', inputs: {} }],
+      edges: [],
+    });
+
+    const result = await (await engine.run({ pipelineId })).done;
+    expect(result.status).toBe('SUCCESS');
+  });
+
+  it('removes the external abort listener after normal completion (no accumulation across repeated runs)', async () => {
+    const engine = makeEngine();
+    const pipelineId = await engine.save({
+      name: 'listener-cleanup',
+      nodes: [
+        {
+          id: 'upper',
+          nodeType: 'TOOL',
+          key: 'tool.uppercase',
+          label: 'Uppercase',
+          inputs: { text: { kind: 'literal', value: 'hello' } },
+        },
+      ],
+      edges: [],
+    });
+
+    const external = new AbortController();
+
+    await (
+      await engine.run({ pipelineId, signal: external.signal })
+    ).done;
+    expect(getEventListeners(external.signal, 'abort')).toHaveLength(0);
+
+    await (
+      await engine.run({ pipelineId, signal: external.signal })
+    ).done;
+    expect(getEventListeners(external.signal, 'abort')).toHaveLength(0);
   });
 });

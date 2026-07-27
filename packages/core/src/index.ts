@@ -3,6 +3,7 @@
 
 export * from './enums.js';
 export * from './cost.js';
+export * from './cost-guard.js';
 export * from './value-binding.js';
 export * from './path-validator.js';
 export * from './node-output.js';

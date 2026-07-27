@@ -118,6 +118,28 @@ guiding rule: **the kernel depends on interfaces, not frameworks.** No NestJS, n
 Prisma, no proprietary libraries in the core packages — verified by the dependency
 tree (only `@langchain/*` + `zod`).
 
+### Engine options (operational safety)
+
+`PipelineEngine` constructor options that guard a run against runaway cost, an
+unbounded graph loop, or a hung wall clock — all optional, all off/unlimited by
+default so a minimal `new PipelineEngine({ store, llmFactory })` keeps working:
+
+| Option           | Type     | Default                 | Behavior                                                                                                                                                                                                                                                                                                                                                                |
+| ---------------- | -------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `costCapUsd`     | `number` | `undefined` (unlimited) | Per-run USD spend cap, checked **at node boundaries** (right after each node's SUCCESS step finishes) — not a mid-handler preemption, so the node that crosses the cap has already billed. A run that exceeds it fails with `error.kind: 'COST_CAP'`. A conservative starting point for most single-user pipelines is 1–5 USD/run; tune to your nodes' actual LLM cost. |
+| `recursionLimit` | `number` | `100`                   | Max LangGraph super-steps per run. A graph that needs more (e.g. a long linear chain, or a loop) throws `GraphRecursionError`, surfaced as a FAILED run with `error.code: 'RECURSION_LIMIT'` instead of an opaque runtime error.                                                                                                                                        |
+| `runTimeoutMs`   | `number` | `600_000` (10 min)      | Hard per-run wall-clock timeout — the run is aborted once it elapses. **Pass `0` to disable the timeout entirely** (no timer is armed at all; this is not "a 0ms timeout").                                                                                                                                                                                             |
+
+```ts
+const engine = new PipelineEngine({
+  store,
+  llmFactory,
+  costCapUsd: 2, // fail the run rather than silently overspend
+  recursionLimit: 50, // catch a runaway/looping graph early
+  runTimeoutMs: 0, // e.g. a long-running batch job with no engine-level deadline
+});
+```
+
 ### MCP tools
 
 ```ts

@@ -3,6 +3,9 @@ import {
   NOOP_LOGGER,
   RUN_DELIVERY_MODE,
   PipelineAbortedError,
+  PipelineNodeExecutionError,
+  PipelineCostCapError,
+  createCostGuard,
   safeJson,
   type PipelineStore,
   type StepRecorder,
@@ -83,8 +86,22 @@ export interface PipelineEngineOptions {
     graph: PipelineWithGraph,
     ctx: { userId?: string; tenantId?: string }
   ) => Promise<void> | void;
-  /** Hard per-run wall-clock timeout. Default 600_000ms. */
+  /** Hard per-run wall-clock timeout. Default 600_000ms. Pass `0` to disable it entirely. */
   runTimeoutMs?: number;
+  /**
+   * Optional per-run USD spend cap, checked at node boundaries (after each
+   * node's SUCCESS step finishes) — not a mid-handler preemption, so the node
+   * that crosses the cap has already billed (#K9). Default `undefined` =
+   * unlimited. A conservative starting point for most single-user pipelines
+   * is 1–5 USD/run; tune to your nodes' actual LLM cost.
+   */
+  costCapUsd?: number;
+  /**
+   * Max LangGraph super-steps per run before it throws `GraphRecursionError`
+   * (surfaced as a FAILED run with `error.code: 'RECURSION_LIMIT'`). Default
+   * `100`, matching LangGraph's compiled-graph default.
+   */
+  recursionLimit?: number;
 }
 
 export interface RunOptions {
@@ -129,6 +146,8 @@ export class PipelineEngine {
   private readonly store: PipelineStore & StepRecorder;
   private readonly logger: Logger;
   private readonly runTimeoutMs: number;
+  private readonly costCapUsd?: number;
+  private readonly recursionLimit: number;
   private readonly catalogLoader?: CatalogLoader;
   private readonly inFlight = new Map<string, AbortController>();
   private readonly listeners = new Map<string, Set<PipelineEventListener>>();
@@ -136,7 +155,9 @@ export class PipelineEngine {
   constructor(private readonly options: PipelineEngineOptions) {
     this.store = options.store;
     this.logger = options.logger ?? NOOP_LOGGER;
-    this.runTimeoutMs = options.runTimeoutMs ?? 600_000;
+    this.runTimeoutMs = options.runTimeoutMs ?? 600_000; // 0 = disabled, see execute()
+    this.costCapUsd = options.costCapUsd;
+    this.recursionLimit = options.recursionLimit ?? 100;
     this.catalogLoader = options.catalogLoader;
     this.registry = new NodeSpecRegistry(options.mcpNodeResolver);
     this.compiler = new PipelineCompiler({
@@ -236,16 +257,22 @@ export class PipelineEngine {
 
     const controller = new AbortController();
     this.inFlight.set(runId, controller);
+    // Named handler (not an inline closure) so it can be un-registered again
+    // on the happy path below — an inline `() => {}` passed to
+    // addEventListener can never be removed because nothing keeps a reference
+    // to it. `{ once: true }` only self-removes if 'abort' actually fires; a
+    // run that completes normally never fires it, so without an explicit
+    // `removeEventListener` the listener leaks for the lifetime of the
+    // external signal (#K4).
+    let externalAbortHandler: (() => void) | undefined;
     if (opts.signal) {
       if (opts.signal.aborted) controller.abort();
-      else
-        opts.signal.addEventListener(
-          'abort',
-          () => {
-            controller.abort();
-          },
-          { once: true }
-        );
+      else {
+        externalAbortHandler = () => {
+          controller.abort();
+        };
+        opts.signal.addEventListener('abort', externalAbortHandler, { once: true });
+      }
     }
 
     // Register onEvent *before* execute() starts (still synchronous here) so
@@ -262,6 +289,7 @@ export class PipelineEngine {
     }
 
     const done = this.execute(graph, runId, deliveryMode, opts.context, controller).finally(() => {
+      if (externalAbortHandler) opts.signal?.removeEventListener('abort', externalAbortHandler);
       this.inFlight.delete(runId);
       // Defer listener cleanup a tick so any synchronous post-`done` reads land.
       queueMicrotask(() => this.listeners.delete(runId));
@@ -279,9 +307,23 @@ export class PipelineEngine {
   ): Promise<RunResult> {
     const hasMcpNode = graph.nodes.some((n) => n.key.startsWith('mcp:'));
     let mcpCatalog: CatalogResult | undefined;
-    const timer = setTimeout(() => {
-      controller.abort();
-    }, this.runTimeoutMs);
+    // `runTimeoutMs: 0` disables the wall-clock timeout entirely — the timer
+    // is simply never armed. (Previously `0 ?? 600_000` still evaluated to
+    // `0` since `??` only falls through on null/undefined, so a caller
+    // passing `0` got an immediate `setTimeout(abort, 0)` instead of "no
+    // timeout" (#E1).)
+    const timer =
+      this.runTimeoutMs > 0
+        ? setTimeout(() => {
+            controller.abort();
+          }, this.runTimeoutMs)
+        : undefined;
+
+    // Per-run cost guard, created fresh here (never baked into the compiler's
+    // cached deps — see node-runner.ts's NodeRunnerConfig doc) and flowed
+    // through streamEvents' `configurable`, the same channel as the per-run
+    // AbortSignal.
+    const costGuard = createCostGuard(this.costCapUsd);
 
     try {
       if (hasMcpNode) {
@@ -329,8 +371,8 @@ export class PipelineEngine {
       let final: PipelineState | undefined;
       const stream = compiled.app.streamEvents(initialState, {
         version: 'v2',
-        configurable: { signal: controller.signal },
-        recursionLimit: 100,
+        configurable: { signal: controller.signal, costGuard },
+        recursionLimit: this.recursionLimit,
         signal: controller.signal,
       });
 
@@ -362,7 +404,16 @@ export class PipelineEngine {
       return { runId, status: 'SUCCESS', outputs, cost };
     } catch (err) {
       const aborted = err instanceof PipelineAbortedError || controller.signal.aborted;
+      // GraphRecursionError is LangGraph's own class; matched by name (not
+      // `instanceof`) to avoid an import-time coupling on its exact export
+      // shape — `name` is the stable, documented signal (#K2/#25).
+      const isRecursion = err instanceof Error && err.name === 'GraphRecursionError';
+      const isCostCap =
+        err instanceof PipelineCostCapError ||
+        (err instanceof PipelineNodeExecutionError && err.pipelineError.kind === 'COST_CAP');
       const status: RunStatus = aborted ? 'ABORTED' : 'FAILED';
+      const kind = aborted ? 'ABORTED' : isCostCap ? 'COST_CAP' : 'RUNTIME';
+      const code = isRecursion ? 'RECURSION_LIMIT' : isCostCap ? 'COST_CAP' : 'RUN';
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`[PipelineEngine] run ${status}: ${message}`);
 
@@ -378,7 +429,7 @@ export class PipelineEngine {
       try {
         await this.store.completeRun(runId, {
           status,
-          error: { kind: aborted ? 'ABORTED' : 'RUNTIME', code: 'RUN', message },
+          error: { kind, code, message },
         });
       } catch (storeErr) {
         this.logger.error(`[PipelineEngine] completeRun failed for ${runId}: ${String(storeErr)}`);
@@ -389,10 +440,10 @@ export class PipelineEngine {
         status,
         outputs: {},
         cost: ZERO_COST,
-        error: { kind: aborted ? 'ABORTED' : 'RUNTIME', message },
+        error: { kind, message },
       };
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       if (mcpCatalog) {
         try {
           await mcpCatalog.cleanup();
