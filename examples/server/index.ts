@@ -66,8 +66,15 @@ const { pipelineId } = (await saveRes.json()) as { pipelineId: string };
 console.log('saved pipelineId:', pipelineId);
 
 // 2. Stream a run via SSE
+// POST /pipeline/run/stream both starts the run and streams its live events —
+// the GET .../runs/:runId/stream route is attach-only now (it never starts a
+// run; see the server package's #S11a/#E1 fix).
 console.log('\n── SSE events ──');
-const streamRes = await fetch(`${base}/runs/x/stream?pipelineId=${pipelineId}`);
+const streamRes = await fetch(`${base}/run/stream`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ pipelineId }),
+});
 if (streamRes.body === null) {
   throw new Error('SSE response had no body to stream');
 }
