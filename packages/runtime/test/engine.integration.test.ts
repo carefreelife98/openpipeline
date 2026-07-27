@@ -266,4 +266,69 @@ describe('PipelineEngine end-to-end', () => {
 
     expect(kinds).toContain('RUN_COMPLETE');
   });
+
+  it('delivers the very first event (NODE_START) with no gap when onEvent is passed via RunOptions (#S11b)', async () => {
+    // Before the fix, a consumer had to `await engine.run(...)` then separately
+    // call `engine.onEvent(runId, ...)` — the run's async execution can emit
+    // its first events during that gap, and they are lost (fire-and-forget, no
+    // replay). Passing `onEvent` as part of RunOptions registers the listener
+    // synchronously, before `execute()` is kicked off, closing the gap
+    // structurally rather than by timing luck.
+    const engine = makeEngine();
+    const pipelineId = await engine.save({
+      name: 'no-gap',
+      nodes: [
+        {
+          id: 'upper',
+          nodeType: 'TOOL',
+          key: 'tool.uppercase',
+          label: 'Uppercase',
+          inputs: { text: { kind: 'literal', value: 'hello' } },
+        },
+      ],
+      edges: [],
+    });
+
+    const kinds: string[] = [];
+    const { done } = await engine.run({ pipelineId, onEvent: (evt) => kinds.push(evt.kind) });
+    await done;
+
+    expect(kinds[0]).toBe('NODE_START');
+    expect(kinds).toContain('RUN_COMPLETE');
+  });
+
+  it('abort() returns false for an unknown run and true for an in-flight one; isInFlight tracks the same lifecycle', async () => {
+    const engine = makeEngine();
+
+    // Unknown run: no-op, honestly reported as "nothing to abort".
+    expect(engine.isInFlight('nonexistent')).toBe(false);
+    expect(engine.abort('nonexistent')).toBe(false);
+
+    const pipelineId = await engine.save({
+      name: 'abort-me',
+      nodes: [
+        {
+          id: 'upper',
+          nodeType: 'TOOL',
+          key: 'tool.uppercase',
+          label: 'Uppercase',
+          inputs: { text: { kind: 'literal', value: 'hello' } },
+        },
+      ],
+      edges: [],
+    });
+
+    const { runId, done } = await engine.run({ pipelineId });
+    // `run()` has already registered the controller in `inFlight` by the time
+    // it resolves (before `execute()`'s first await settles), so this is
+    // deterministic — no polling required.
+    expect(engine.isInFlight(runId)).toBe(true);
+    expect(engine.abort(runId)).toBe(true);
+
+    const result = await done;
+    expect(result.status).toBe('ABORTED');
+    expect(engine.isInFlight(runId)).toBe(false);
+    // Finished run: abort is now a no-op too.
+    expect(engine.abort(runId)).toBe(false);
+  });
 });

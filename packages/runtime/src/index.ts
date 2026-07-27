@@ -94,6 +94,14 @@ export interface RunOptions {
   context?: RunContext;
   /** External abort signal; linked to the internal controller. */
   signal?: AbortSignal;
+  /**
+   * Registered *before* `execute()` starts (synchronously, inside `run()`),
+   * so it structurally cannot miss the run's first events — no subscribe gap
+   * between `run()` resolving and a caller separately calling `onEvent()`
+   * (#S11b). Prefer this over the standalone `onEvent()` method when you need
+   * every event from the very start of the run.
+   */
+  onEvent?: PipelineEventListener;
 }
 
 export interface RunResult {
@@ -162,9 +170,22 @@ export class PipelineEngine {
     return this.store.listRuns(pipelineId, opts);
   }
 
-  /** Abort an in-flight run by id. No-op if the run is unknown or finished. */
-  abort(runId: string): void {
-    this.inFlight.get(runId)?.abort();
+  /**
+   * Abort an in-flight run by id. Returns `true` if the run was in flight (and
+   * is now being aborted), `false` if the runId is unknown or already
+   * finished — honest signal for callers (e.g. an HTTP abort route) that need
+   * to distinguish "aborted" from "nothing to abort" (#S11d).
+   */
+  abort(runId: string): boolean {
+    const controller = this.inFlight.get(runId);
+    if (!controller) return false;
+    controller.abort();
+    return true;
+  }
+
+  /** Whether a run is currently in flight (started, not yet finished). */
+  isInFlight(runId: string): boolean {
+    return this.inFlight.has(runId);
   }
 
   /**
@@ -225,6 +246,19 @@ export class PipelineEngine {
           },
           { once: true }
         );
+    }
+
+    // Register onEvent *before* execute() starts (still synchronous here) so
+    // the run's very first emitted event structurally cannot be missed — no
+    // subscribe gap (#S11b). Any listener added later via `onEvent()` shares
+    // the same underlying Set and can still miss earlier events.
+    if (opts.onEvent) {
+      let set = this.listeners.get(runId);
+      if (!set) {
+        set = new Set();
+        this.listeners.set(runId, set);
+      }
+      set.add(opts.onEvent);
     }
 
     const done = this.execute(graph, runId, deliveryMode, opts.context, controller).finally(() => {

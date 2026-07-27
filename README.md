@@ -178,14 +178,20 @@ import { createPipelineHandlers, createNodeHttpHandler } from '@openpipeline/ser
 const handlers = createPipelineHandlers(engine);
 createServer(createNodeHttpHandler(handlers)).listen(3000);
 // POST /pipeline, GET /pipeline/:id, GET /pipeline/:id/runs,
-// POST /pipeline/run, GET /pipeline/runs/:runId/stream?pipelineId=... (SSE)
+// POST /pipeline/run (non-streaming), POST /pipeline/run/stream (starts a run
+// and streams it, SSE), GET /pipeline/runs/:runId/stream (attach to an
+// already in-flight run's SSE stream; 404 if it's unknown or has finished —
+// it never starts a run), POST /pipeline/run/:runId/abort (404 if unknown/finished)
 ```
 
 `PipelineHandlers` are plain async functions with no framework dependency — mount
 them into Express/Fastify/Hono, or use the bundled Node `http` adapter. Live run
 events (`NODE_START` / `NODE_END` / `RUN_COMPLETE`, with node output + timing) are
 streamed via SSE — the engine drives them from LangGraph `streamEvents`, and you
-can also subscribe directly with `engine.onEvent(runId, listener)`.
+can also subscribe directly with `engine.onEvent(runId, listener)`. Passing
+`onEvent` straight into `engine.run(opts)` (or using `runAndStream`) registers
+the listener before the run starts executing, so no events from the very start
+of the run are missed.
 
 ### Visual builder (React)
 

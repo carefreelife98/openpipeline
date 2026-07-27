@@ -74,6 +74,34 @@ describe('sseFrame', () => {
     const dataJson = sseFrame(event).split('\n')[1]?.slice('data: '.length) ?? '';
     expect(JSON.parse(dataJson)).toEqual(event);
   });
+
+  it('guards JSON.stringify — an unserializable payload degrades to a {kind,error} frame instead of throwing (#E3)', () => {
+    // A node output containing a circular reference (e.g. a TOOL handler that
+    // returns a self-referential object, before any safeJson pass runs on the
+    // persistence path) must not throw mid-stream and tear down the whole SSE
+    // response — it degrades to a minimal, still-valid frame that names the
+    // failure rather than silently dropping it.
+    const circular: Record<string, unknown> = { a: 1 };
+    circular.self = circular;
+    const event: PipelineEvent = { kind: 'NODE_END', nodeId: 'n1', output: circular };
+
+    expect(() => sseFrame(event)).not.toThrow();
+    const frame = sseFrame(event);
+    expect(frame.split('\n')[0]).toBe('event: NODE_END');
+    const dataLine = frame.split('\n').find((l) => l.startsWith('data: '));
+    const parsed = JSON.parse(dataLine?.slice('data: '.length) ?? '') as {
+      kind: string;
+      error: string;
+    };
+    expect(parsed).toEqual({ kind: 'NODE_END', error: 'payload_not_serializable' });
+  });
+
+  it('still terminates the degraded frame with the SSE double newline', () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const event: PipelineEvent = { kind: 'NODE_END', nodeId: 'n1', output: circular };
+    expect(sseFrame(event).endsWith('\n\n')).toBe(true);
+  });
 });
 
 describe('SSE_HEADERS', () => {
