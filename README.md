@@ -11,7 +11,7 @@ It is **headless and unopinionated**: no web framework, no database, no
 multi-tenancy. You bring an LLM provider and (optionally) a persistence backend;
 everything else is an interface you can swap.
 
-> Status: early (`0.1.x`). The headless engine, MCP integration, in-memory and
+> Status: early (`0.2.x`). The headless engine, MCP integration, in-memory and
 > Postgres persistence, an HTTP/SSE server, and a visual React builder are all
 > functional end-to-end (see the playground). Packages are **ESM-only** and
 > require **Node 22.12+**.
@@ -137,6 +137,35 @@ const engine = new PipelineEngine({
   costCapUsd: 2, // fail the run rather than silently overspend
   recursionLimit: 50, // catch a runaway/looping graph early
   runTimeoutMs: 0, // e.g. a long-running batch job with no engine-level deadline
+});
+```
+
+### Observability
+
+`PipelineEngine` (and the node-runner / binding resolver it drives) accepts an
+optional `logger: Logger` — a plain `{ info, warn, error, debug }` interface, so
+any logging library adapts trivially. **The default is `NOOP_LOGGER` — silent, by
+design** (a library shouldn't write to stdout/your log sink unasked). This is
+deliberately unchanged in `0.2.0`.
+
+That silence has a real cost, though: several of the hardening fixes in this
+release only surface via `logger.warn`/`logger.error` — a lost first-terminal-wins
+race (`completeRun` returning `false`), a store failure isolated from a genuinely
+successful run's terminal write, a late/direct `onEvent` subscribe on a
+non-in-flight run, or an MCP `$ref` circularity truncation. Without a real logger
+wired in, these degrade silently instead of loudly. **Inject a real `Logger` in
+production**:
+
+```ts
+const engine = new PipelineEngine({
+  store,
+  llmFactory,
+  logger: {
+    info: (msg, meta) => myLogger.info(msg, meta),
+    warn: (msg, meta) => myLogger.warn(msg, meta),
+    error: (msg, meta) => myLogger.error(msg, meta),
+    debug: (msg, meta) => myLogger.debug(msg, meta),
+  },
 });
 ```
 
