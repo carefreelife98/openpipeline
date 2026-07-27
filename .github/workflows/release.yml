@@ -113,8 +113,29 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: 'https://registry.npmjs.org'
-          # Deliberately no `cache:` here. npm's own trusted-publishing
+          # Deliberately NOT setting `registry-url` here, even though npm's
+          # own trusted-publishing example workflow includes it. Setting it
+          # makes actions/setup-node write
+          # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` into the
+          # runner .npmrc *unconditionally* -- including when NODE_AUTH_TOKEN
+          # is unset/empty, which is exactly our case (no npm token exists in
+          # this workflow by design). npm then sees auth as "already
+          # configured" from that empty-token line, never starts the OIDC
+          # trusted-publisher exchange, and `npm publish` fails with
+          # ENEEDAUTH/404 instead of publishing.
+          # Reproduced against npm 11.5.1 and 11.14.1, closed as a
+          # setup-node duplicate with no fix shipped in setup-node or npm:
+          # https://github.com/actions/setup-node/issues/1551
+          # Corroborated: https://github.com/orgs/community/discussions/176761
+          # `registry-url` buys this workflow nothing anyway -- we publish to
+          # the default public registry and install no private dependencies
+          # -- so we omit the input rather than work around the .npmrc line
+          # it writes. If a future maintainer adds `registry-url` back for
+          # some other reason, they must also clear `NODE_AUTH_TOKEN: ''` (or
+          # strip the `_authToken` line) in the publish step below, or this
+          # exact failure mode returns.
+          #
+          # Deliberately no `cache:` either. npm's own trusted-publishing
           # workflow example sets `package-manager-cache: false` and notes
           # "never use caching in release builds" -- keep the publish job's
           # toolchain state minimal and reproducible per tag.
@@ -163,6 +184,22 @@ jobs:
           #   runtime                                        -> depends on core, nodes
           #   server                                          -> depends on core, runtime
           ORDER=(core nodes mcp store-memory store-prisma react runtime server)
+
+          # Guard against ORDER silently drifting out of sync with what was
+          # actually packed (e.g. a new packages/<name> added without
+          # updating this list). Without this check, the loop below only
+          # verifies each *listed* tarball exists (the `[ ! -f "$tarball" ]`
+          # guard) -- it never notices *extra* tarballs that ORDER doesn't
+          # mention. That means the job would go green while silently
+          # shipping a release missing that package, with no signal
+          # anywhere that anything was skipped.
+          packed_count=$(find .release-tarballs -maxdepth 1 -name '*.tgz' | wc -l | tr -d ' ')
+          if [ "$packed_count" -ne "${#ORDER[@]}" ]; then
+            echo "ERROR: .release-tarballs contains $packed_count tarball(s) but ORDER lists ${#ORDER[@]} package(s) (${ORDER[*]})." >&2
+            echo "A package was likely added to or removed from packages/* without updating the leaf-first ORDER above. Update ORDER (respecting the @openpipeline/* dependency graph) before publishing -- do not proceed with a mismatched count." >&2
+            ls -la .release-tarballs >&2
+            exit 1
+          fi
 
           for pkg in "${ORDER[@]}"; do
             tarball=".release-tarballs/openpipeline-${pkg}-${VERSION}.tgz"

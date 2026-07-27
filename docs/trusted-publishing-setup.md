@@ -54,6 +54,7 @@ Repeat the steps below for each of:
    | Repository | `openpipeline` |
    | Workflow filename | `release.yml` |
    | Environment name | *(leave blank)* |
+   | Allowed actions | Check **`npm publish`** only. Leave `npm stage publish` **unchecked**. |
 
    Leave **Environment name** blank unless you have deliberately added a
    [GitHub Environment](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment)
@@ -62,6 +63,12 @@ Repeat the steps below for each of:
    match the workflow's `environment:` value exactly, or publishing will be
    rejected. `release.yml` does not set one by default (see the comment
    above `jobs.publish` in the workflow).
+
+   **Allowed actions is required** — npm's form will not save with zero
+   boxes checked ("At least one must be selected"). `release.yml` only ever
+   runs `npm publish "$tarball"` (never `npm stage publish`), so check only
+   `npm publish`; leaving `npm stage publish` checked as well grants a
+   publish capability this pipeline never uses and doesn't need.
 6. Save.
 7. Repeat for the remaining 7 packages. (npm's UI as of this writing does not
    offer a bulk-apply action across scoped packages in one form submission —
@@ -79,6 +86,10 @@ After configuring all 8 packages:
    - `carefreelife98/openpipeline`
    - Workflow: `release.yml`
    - Environment: *(blank, unless intentionally set)*
+   - Allowed actions: `npm publish` checked, `npm stage publish`
+     **unchecked**. A blank/unset value here is not possible (npm requires
+     at least one), so specifically confirm it's `npm publish` and not the
+     stage variant left checked by mistake.
 2. Confirm `.github/workflows/release.yml` on `main` has, at minimum:
    ```yaml
    permissions:
