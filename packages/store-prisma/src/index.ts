@@ -200,12 +200,30 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
   /** Diff update — no data loss. Update/create draft nodes, soft-delete missing ones, recreate edges. */
   private async updatePipeline(id: string, draft: PipelineDraft): Promise<string> {
     return this.prisma.$transaction(async (tx) => {
+      // #12 — monotonic `updatedAt` (backport of the S3 fix already applied
+      // to store-memory's `save()`). Postgres's `@updatedAt` is a plain JS
+      // `Date` (millisecond resolution): two updates to the SAME pipeline
+      // landing in the same wall-clock millisecond (real on a fast machine or
+      // a coarse OS clock) would otherwise get the identical auto-timestamp,
+      // and the compiler's LRU cache key is
+      // `${pipelineId}:${updatedAt.getTime()}` (compiler.ts) — an unchanged
+      // key means a same-millisecond re-save silently keeps serving the
+      // STALE pre-edit compiled graph. Read the pipeline's current
+      // `updatedAt` first and set the new one to strictly max(now, prev + 1),
+      // same formula as store-memory.
+      const current = await tx.pipeline.findUnique<{ updatedAt: Date }>({
+        where: { id },
+        select: { updatedAt: true },
+      });
+      const updatedAt = new Date(Math.max(Date.now(), (current?.updatedAt.getTime() ?? 0) + 1));
+
       await tx.pipeline.update<{ id: string }>({
         where: { id },
         data: {
           name: draft.name,
           description: draft.description ?? null,
           outputJsonSchema: draft.outputJsonSchema ?? null,
+          updatedAt,
         },
       });
 
@@ -441,13 +459,29 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
 
   // ── Internals ─────────────────────────────────────────────────────────────
 
-  /** Serialize an operation behind the per-run queue (sequenceIndex safety). */
+  /**
+   * Serialize an operation behind the per-run queue (sequenceIndex safety).
+   *
+   * The promise stored in `startQueues` (`tracked`) must never be allowed to
+   * reject unhandled: it exists purely so the *next* `start()`/`startChild()`
+   * call has something to chain onto, and nothing else ever attaches a
+   * rejection handler to that exact promise object. Without the `.catch(() =>
+   * undefined)` below, the LAST call for a run rejecting (even if the caller
+   * awaits and catches the `next` promise this method returns) leaves
+   * `tracked` — a *different* promise, derived via `.finally()` — as a
+   * genuinely unhandled rejection, which trips Node's default
+   * `--unhandled-rejections=throw` and kills the host process. Mirrors
+   * store-memory's `nextSeq` (`next.catch(() => undefined)` kept alive
+   * separately from the value returned to the caller).
+   */
   private serializeByRun<T>(runId: string, op: () => Promise<T>): Promise<T> {
     const previous = this.startQueues.get(runId) ?? Promise.resolve();
     const next = previous.then(op, op);
-    const tracked = next.finally(() => {
-      if (this.startQueues.get(runId) === tracked) this.startQueues.delete(runId);
-    });
+    const tracked = next
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.startQueues.get(runId) === tracked) this.startQueues.delete(runId);
+      });
     this.startQueues.set(runId, tracked);
     return next;
   }

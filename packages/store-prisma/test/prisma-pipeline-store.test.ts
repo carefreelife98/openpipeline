@@ -1,6 +1,6 @@
 import type { CostBundle, PipelineDraft, RunDeliveryMode, StepFinish } from '@openpipeline/core';
 import { ZERO_COST } from '@openpipeline/core';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PrismaPipelineStore } from '../src/index.js';
 import type { PrismaClientLike } from '../src/prisma-types.js';
@@ -99,6 +99,13 @@ function createFakePrisma(): FakePrisma {
           startedAt: new Date(),
           sequenceIndex: d.sequenceIndex ?? 0,
         };
+        // Simulate schema.prisma's `@default(now())` / `@updatedAt` on the
+        // `pipeline` model (#12) — a real Prisma client auto-populates both
+        // on create unless the caller supplies its own value.
+        if (name === 'pipeline') {
+          row.createdAt ??= new Date();
+          row.updatedAt ??= new Date();
+        }
         t.set(rid, row);
         return Promise.resolve(row as unknown as TRow);
       },
@@ -180,6 +187,12 @@ function createFakePrisma(): FakePrisma {
       }): Promise<TRow> => {
         const rid = (where as { id: string }).id;
         const row = { ...t.get(rid), ...data, id: rid } as Row;
+        // Simulate `@updatedAt` on the `pipeline` model (#12): auto-bump
+        // UNLESS the caller explicitly supplied `updatedAt` (real Prisma
+        // behavior — an explicit value always wins over the auto-timestamp).
+        if (name === 'pipeline' && !('updatedAt' in (data as Row))) {
+          row.updatedAt = new Date();
+        }
         t.set(rid, row);
         return Promise.resolve(row as unknown as TRow);
       },
@@ -513,6 +526,49 @@ describe('PrismaPipelineStore.save — diff update path', () => {
     await store.save(draft({ id, edges: [] }));
 
     expect(fake.rowsOf('pipelineEdge')).toHaveLength(0);
+  });
+});
+
+describe('PrismaPipelineStore.save — monotonic updatedAt on update (#12/S3)', () => {
+  it('strictly bumps updatedAt forward across two updates landing in the same wall-clock millisecond', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+    const id = await store.save(draft({ name: 'v1' }));
+    const afterCreate = fake.tables.pipeline.get(id)?.updatedAt as Date;
+
+    // Pin Date.now() so both updates land in the SAME millisecond — the
+    // exact scenario a naive `@updatedAt` auto-timestamp collides on.
+    const frozen = afterCreate.getTime();
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(frozen);
+    try {
+      await store.save(draft({ id, name: 'v2' }));
+      const afterFirstUpdate = fake.tables.pipeline.get(id)?.updatedAt as Date;
+      await store.save(draft({ id, name: 'v3' }));
+      const afterSecondUpdate = fake.tables.pipeline.get(id)?.updatedAt as Date;
+
+      expect(afterFirstUpdate.getTime()).toBeGreaterThan(afterCreate.getTime());
+      expect(afterSecondUpdate.getTime()).toBeGreaterThan(afterFirstUpdate.getTime());
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('produces a distinct compiler cache key across two same-millisecond updates', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+    const id = await store.save(draft({ name: 'v1' }));
+    const first = await store.load(id);
+
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(first.pipeline.updatedAt.getTime());
+    try {
+      await store.save(draft({ id, name: 'v2' }));
+      const second = await store.load(id);
+
+      const keyOf = (updatedAt: Date): string => `${id}:${String(updatedAt.getTime())}`;
+      expect(keyOf(second.pipeline.updatedAt)).not.toBe(keyOf(first.pipeline.updatedAt));
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
@@ -1024,6 +1080,66 @@ describe('PrismaPipelineStore step sequencing (StepRecorder)', () => {
     const row = fake.tables.pipelineRunStep.get(stepId);
     expect(row?.nodeLabel).toBe('Pretty Label');
     expect(row?.parentStepId).toBeNull();
+  });
+});
+
+describe('PrismaPipelineStore.serializeByRun — unhandled rejection guard (critical)', () => {
+  // The per-run queue promise stashed in `startQueues` must never surface as
+  // an unhandled rejection, even when the LAST start()/startChild() call for
+  // a run rejects and the caller DOES catch the promise `start()` itself
+  // returns — the map-stored derived promise is a separate object that
+  // nothing else ever attaches a handler to. Without the fix this reliably
+  // fires Node's `unhandledRejection` (and, outside a test harness that
+  // intercepts it, `--unhandled-rejections=throw` kills the process).
+  it('does not leave an unhandled rejection when the underlying create() rejects, even though the caller awaits/catches its own promise', async () => {
+    const fake = createFakePrisma();
+    fake.client.pipelineRunStep.create = () => Promise.reject(new Error('db exploded'));
+    const store = new PrismaPipelineStore(fake.client);
+
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandledRejection);
+
+    try {
+      await expect(store.start({ runId: 'r1', nodeId: 'n1', nodeLabel: 'A' })).rejects.toThrow(
+        'db exploded'
+      );
+      // Let Node's unhandled-rejection detector (which runs after the
+      // microtask queue drains, on a later turn of the event loop) get a
+      // chance to fire before asserting nothing was reported.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+    }
+
+    expect(unhandled).toEqual([]);
+  });
+
+  it('still serializes subsequent start() calls correctly after a prior call in the same run rejected', async () => {
+    const fake = createFakePrisma();
+    let failNext = true;
+    const originalCreate = fake.client.pipelineRunStep.create.bind(fake.client.pipelineRunStep);
+    fake.client.pipelineRunStep.create = <TRow extends { id: string }>(args: {
+      data: object;
+    }): Promise<TRow> => {
+      if (failNext) {
+        failNext = false;
+        return Promise.reject(new Error('first call fails'));
+      }
+      return originalCreate<TRow>(args);
+    };
+    const store = new PrismaPipelineStore(fake.client);
+
+    await expect(store.start({ runId: 'r1', nodeId: 'n0', nodeLabel: 'Zero' })).rejects.toThrow(
+      'first call fails'
+    );
+    const stepId = await store.start({ runId: 'r1', nodeId: 'n1', nodeLabel: 'A' });
+
+    const row = fake.tables.pipelineRunStep.get(stepId);
+    expect(row?.sequenceIndex).toBe(0);
   });
 });
 
