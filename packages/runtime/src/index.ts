@@ -135,6 +135,39 @@ export interface RunHandle {
 }
 
 /**
+ * Pure classification of a run-ending error into the `{kind, code}` pair
+ * persisted on the run and returned to the caller. Extracted out of
+ * `execute()`'s catch block (rather than left inline) specifically so this
+ * logic is unit-testable in isolation — the real race it exists to prevent
+ * (a `costGuard.check()`/`GraphRecursionError` trip landing in the same
+ * super-step as a wall-clock timeout or `engine.abort(runId)`) only
+ * reproduces through the full LangGraph stack inside an extremely narrow,
+ * LangGraph-internals-dependent microtask window (confirmed empirically —
+ * not a window a test can pin without coupling to undocumented library
+ * internals), so the fix is verified directly against its own inputs (#I1).
+ *
+ * `aborted` always wins: `isRecursion`/`isCostCap` are gated on `!aborted`
+ * so a self-contradictory pair like `{kind:'ABORTED', code:'COST_CAP'}` can
+ * never be produced, regardless of what the underlying node/graph error was.
+ */
+export function classifyRunFailure(
+  err: unknown,
+  aborted: boolean
+): { kind: 'ABORTED' | 'COST_CAP' | 'RUNTIME'; code: string } {
+  // GraphRecursionError is LangGraph's own class; matched by name (not
+  // `instanceof`) to avoid an import-time coupling on its exact export
+  // shape — `name` is the stable, documented signal (#K2/#25).
+  const isRecursion = !aborted && err instanceof Error && err.name === 'GraphRecursionError';
+  const isCostCap =
+    !aborted &&
+    (err instanceof PipelineCostCapError ||
+      (err instanceof PipelineNodeExecutionError && err.pipelineError.kind === 'COST_CAP'));
+  const kind = aborted ? 'ABORTED' : isCostCap ? 'COST_CAP' : 'RUNTIME';
+  const code = isRecursion ? 'RECURSION_LIMIT' : isCostCap ? 'COST_CAP' : 'RUN';
+  return { kind, code };
+}
+
+/**
  * Orchestrates a pipeline run end to end over the kernel. A plain class that
  * takes the interface bag — no NestJS, no Prisma, no lifecycle hooks. Rewritten
  * (not extracted) from Mate-X's PipelineRunnerService, preserving: per-run MCP
@@ -404,16 +437,10 @@ export class PipelineEngine {
       return { runId, status: 'SUCCESS', outputs, cost };
     } catch (err) {
       const aborted = err instanceof PipelineAbortedError || controller.signal.aborted;
-      // GraphRecursionError is LangGraph's own class; matched by name (not
-      // `instanceof`) to avoid an import-time coupling on its exact export
-      // shape — `name` is the stable, documented signal (#K2/#25).
-      const isRecursion = err instanceof Error && err.name === 'GraphRecursionError';
-      const isCostCap =
-        err instanceof PipelineCostCapError ||
-        (err instanceof PipelineNodeExecutionError && err.pipelineError.kind === 'COST_CAP');
       const status: RunStatus = aborted ? 'ABORTED' : 'FAILED';
-      const kind = aborted ? 'ABORTED' : isCostCap ? 'COST_CAP' : 'RUNTIME';
-      const code = isRecursion ? 'RECURSION_LIMIT' : isCostCap ? 'COST_CAP' : 'RUN';
+      // I1 — `kind`/`code` must never disagree with `aborted`: see
+      // classifyRunFailure's own doc for why this is gated there, not here.
+      const { kind, code } = classifyRunFailure(err, aborted);
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`[PipelineEngine] run ${status}: ${message}`);
 

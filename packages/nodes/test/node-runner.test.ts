@@ -325,4 +325,77 @@ describe('node-runner input-parse hint (K12)', () => {
       return true;
     });
   });
+
+  it('enriches the hint without mutating a getter-only ZodError.message (C1 — zod v3 classic peer-range regression)', async () => {
+    // Reproduces zod v3 classic's `ZodError.prototype.message`: a getter with
+    // NO setter. In ESM (strict mode, which this package is), `err.message =
+    // ...` on such an object throws `TypeError: Cannot set property message
+    // ... which has only a getter` instead of updating the message — exactly
+    // what the declared `"zod": "^3.25.32 || ^4.2.0"` peerDependency range
+    // permits a consumer to install. The fix must never write to the caught
+    // ZodError; it must only enrich the *derived* pipelineError.
+    let originalMessage = '';
+    let getterOnlyZodError!: z.ZodError;
+    try {
+      z.object({ n: z.number() }).parse({ n: 'nope' });
+    } catch (e) {
+      getterOnlyZodError = e as z.ZodError;
+      originalMessage = getterOnlyZodError.message;
+    }
+    Object.defineProperty(getterOnlyZodError, 'message', {
+      get: () => originalMessage,
+      configurable: true,
+      enumerable: true,
+      // Deliberately no `set` — an assignment must throw, just like zod v3.
+    });
+
+    const spec = {
+      key: 'tool.needs-number-v3',
+      nodeType: 'TOOL' as const,
+      displayName: 'NeedsNumberV3',
+      description: '',
+      icon: 'x',
+      // Stand-in for inputSchema: `.safeParse()` returns the getter-only
+      // fixture above (node-runner uses `.safeParse`, not `.parse`, for K12
+      // — see node-runner.ts) instead of doing real validation.
+      inputSchema: {
+        safeParse: () => ({ success: false as const, error: getterOnlyZodError }),
+      } as unknown as z.ZodType,
+      outputSchema: z.object({ kind: z.literal('tool.needs-number-v3') }),
+      handler: () => Promise.resolve({ kind: 'tool.needs-number-v3' as const }),
+    };
+    const node: PipelineNodeRow = {
+      id: 'n1',
+      pipelineId: 'p1',
+      nodeType: 'TOOL',
+      key: 'tool.needs-number-v3',
+      label: 'NeedsNumberV3',
+      inputs: { n: { kind: 'state', path: 'outputs.upstream.value' } },
+    };
+    const deps = {
+      bindingResolver: { resolveExplicit: () => ({ n: 'not-a-number' }) },
+      stepRecorder: {
+        start: vi.fn().mockResolvedValue('step-1'),
+        finish: vi.fn(() => Promise.resolve()),
+      },
+      llmFactory: { createModel: () => ({}) },
+      nodeMap: new Map(),
+    } as unknown as NodeRunnerDeps;
+    const runner = makeNodeRunner(node, spec, deps);
+
+    // Must not throw a TypeError from mutating err.message — the run must
+    // still surface a well-formed VALIDATION/ZOD_PARSE error with the hint.
+    await expect(runner(makeState())).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(PipelineNodeExecutionError);
+      const wrapped = err as PipelineNodeExecutionError;
+      expect(wrapped.pipelineError.kind).toBe('VALIDATION');
+      expect(wrapped.pipelineError.code).toBe('ZOD_PARSE');
+      expect(wrapped.pipelineError.message).toContain('outputs.upstream.value');
+      expect(wrapped.pipelineError.message).toContain('"n"');
+      return true;
+    });
+
+    // Classification-invariant: the caught ZodError itself is never mutated.
+    expect(getterOnlyZodError.message).toBe(originalMessage);
+  });
 });

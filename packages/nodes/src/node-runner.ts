@@ -82,6 +82,11 @@ export function makeNodeRunner(
     // FAILED finish() below — a failed node's already-consumed resolver/handler
     // cost must not be silently dropped (#24).
     const costAcc = createCostAccumulator();
+    // K12 — set (by reference) only on an input-parse failure; see the
+    // `.safeParse` call below for why this is a captured reference rather
+    // than a boolean flag re-derived from `err instanceof z.ZodError` in the
+    // outer catch (an output-parse ZodError would satisfy that too).
+    let inputParseZodError: z.ZodError | undefined;
 
     try {
       checkAbort(signal);
@@ -131,30 +136,29 @@ export function makeNodeRunner(
       }
 
       checkAbort(signal);
-      let parsed: unknown;
-      try {
-        parsed = spec.inputSchema.parse(resolved);
-      } catch (err) {
-        // K12 — enrich a *input*-parse ZodError (message-only) with the
-        // state-bound slot(s) that fed it, so the failure points at the
-        // upstream binding instead of a bare Zod issue. Scoped to this call
-        // site only: an outputSchema.parse failure below is a handler-output
-        // bug, and pointing at input bindings there would mislead (#29).
-        // Classification is unchanged — still a `z.ZodError`, still mapped to
-        // VALIDATION/ZOD_PARSE by `toPipelineError` below.
-        if (err instanceof z.ZodError) {
-          const hints = Object.entries(node.inputs)
-            .filter(
-              (entry): entry is [string, { kind: 'state'; path: string }] =>
-                entry[1].kind === 'state'
-            )
-            .map(([slot, b]) => `"${slot}" ← state 바인딩: ${b.path}`);
-          if (hints.length > 0) {
-            err.message = `${err.message}\n(참고 — state 바인딩 슬롯: ${hints.join(', ')})`;
-          }
-        }
-        throw err;
+      // K12 — `.safeParse` (not `.parse` + try/catch) so an input-parse
+      // failure is a *value*, not a thrown exception. This is what lets the
+      // hint be attached to the *derived* PipelineError in the outer catch
+      // (via `inputParseZodError`, checked by reference) rather than by
+      // mutating the caught error: both `@openpipeline/core` and
+      // `@openpipeline/nodes` declare `"zod": "^3.25.32 || ^4.2.0"` as a
+      // peerDependency, and under zod v3 classic `ZodError.prototype.message`
+      // is a getter with no setter — assigning to it (e.g. `err.message =
+      // ...`) throws `TypeError: Cannot set property message ... which has
+      // only a getter` in this package's ESM strict mode, destroying the
+      // original validation error and reclassifying it as RUNTIME. Enriching
+      // `pipelineError.message` in the outer catch (after `toPipelineError`)
+      // keeps classification (`VALIDATION`/`ZOD_PARSE`) unchanged across the
+      // whole zod peer range and never mutates the caught error. Scoped to
+      // this call site only (by reference identity, checked in the outer
+      // catch): an outputSchema.parse failure below is a handler-output bug,
+      // and pointing at input bindings there would mislead (#29).
+      const inputParseResult = spec.inputSchema.safeParse(resolved);
+      if (!inputParseResult.success) {
+        inputParseZodError = inputParseResult.error;
+        throw inputParseResult.error;
       }
+      const parsed = inputParseResult.data;
 
       checkAbort(signal);
       const ctx = buildExecutionContext(node, state, stepId, deps, costAcc, signal, logger);
@@ -189,7 +193,25 @@ export function makeNodeRunner(
         events,
       };
     } catch (err) {
-      const pipelineError = toPipelineError(err);
+      let pipelineError = toPipelineError(err);
+      // K12 — attach the state-binding hint here, onto the *derived*
+      // PipelineError, not the caught `err` (see the `.safeParse` call above
+      // for why). Reference-checked against `inputParseZodError` (not a
+      // bare `err instanceof z.ZodError`) so an outputSchema.parse ZodError
+      // never gets it.
+      if (inputParseZodError && err === inputParseZodError) {
+        const hints = Object.entries(node.inputs)
+          .filter(
+            (entry): entry is [string, { kind: 'state'; path: string }] => entry[1].kind === 'state'
+          )
+          .map(([slot, b]) => `"${slot}" ← state 바인딩: ${b.path}`);
+        if (hints.length > 0) {
+          pipelineError = {
+            ...pipelineError,
+            message: `${pipelineError.message}\n(참고 — state 바인딩 슬롯: ${hints.join(', ')})`,
+          };
+        }
+      }
       logger.error(
         `[NodeRunner] node FAILED: ${node.label} (id=${node.id.slice(0, 8)}, key=${node.key}) — ` +
           `${pipelineError.kind}/${pipelineError.code}: ${pipelineError.message.slice(0, 2000)}`
