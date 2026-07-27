@@ -6,7 +6,6 @@ dist/
 .env.local
 *.log
 coverage/
-docs/
 packages/store-prisma/src/generated/
 /package/
 
@@ -21,6 +20,12 @@ pnpm-debug.log*
 # Private session-context docs (not for public OSS repo)
 /CLAUDE.md
 /PRODUCT.md
-
 # npm pack tarballs (build artifacts)
 *.tgz
+
+# Narrowed 2026-07-27 (was a blanket `docs/`) to match the rationale in
+# 5899789/d72876a: only docs/superpowers/ (session planning/brainstorming)
+# is private. `docs/` itself now holds real committed maintainer docs (e.g.
+# RELEASING.md's sibling docs/trusted-publishing-setup.md) and must NOT be
+# ignored, or such files silently never get tracked. See task-T-report.md.
+docs/superpowers/
