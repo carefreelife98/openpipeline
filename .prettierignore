@@ -5,3 +5,4 @@ coverage/
 pnpm-lock.yaml
 packages/store-prisma/src/generated/
 docs/
+.superpowers/
