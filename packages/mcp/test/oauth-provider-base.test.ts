@@ -2,7 +2,9 @@ import type { OAuthClientMetadata, OAuthTokens } from '@modelcontextprotocol/sdk
 import { describe, it, expect } from 'vitest';
 
 import { StoreBackedOAuthProvider } from '../src/oauth-provider-base.js';
+import type { StoreBackedOAuthProviderOptions } from '../src/oauth-provider-base.js';
 import { InMemoryOAuthStateStore } from '../src/oauth-store.js';
+import type { OAuthStateStore } from '../src/oauth-store.js';
 
 const META: OAuthClientMetadata = {
   redirect_uris: ['http://localhost:3000/cb'],
@@ -12,14 +14,20 @@ const META: OAuthClientMetadata = {
   token_endpoint_auth_method: 'none',
 };
 
-// Concrete test subclass: fixed session id, captures redirect URL.
+// Concrete test subclass: configurable session id (default 'sid1'), captures redirect URL.
 class TestProvider extends StoreBackedOAuthProvider {
   public redirected?: URL;
-  protected getSessionId() {
-    return 'sid1';
+  constructor(
+    store: OAuthStateStore,
+    opts: StoreBackedOAuthProviderOptions,
+    private readonly sessionId: string = 'sid1'
+  ) {
+    super(store, opts);
   }
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async redirectToAuthorization(url: URL) {
+  protected getSessionId() {
+    return this.sessionId;
+  }
+  redirectToAuthorization(url: URL) {
     this.redirected = url;
   }
 }
@@ -77,9 +85,31 @@ describe('StoreBackedOAuthProvider', () => {
     expect(await p.clientInformation()).toBeTruthy();
   });
 
-  it('redirectToAuthorization is delegated to the subclass', async () => {
+  it('redirectToAuthorization is delegated to the subclass', () => {
     const { p } = make();
-    await p.redirectToAuthorization(new URL('https://as/authorize?x=1'));
+    p.redirectToAuthorization(new URL('https://as/authorize?x=1'));
     expect(p.redirected?.searchParams.get('x')).toBe('1');
+  });
+
+  it('escapes ":" in session id / serverKey so composite identities cannot collide', async () => {
+    // session "a:b" + serverKey "c" and session "a" + serverKey "b:c" would both
+    // naively join to "a:b:c:tokens" if segments were not escaped before joining.
+    const store = new InMemoryOAuthStateStore();
+    const p1 = new TestProvider(
+      store,
+      { serverKey: 'c', redirectUrl: 'http://localhost:3000/cb', clientMetadata: META },
+      'a:b'
+    );
+    const p2 = new TestProvider(
+      store,
+      { serverKey: 'b:c', redirectUrl: 'http://localhost:3000/cb', clientMetadata: META },
+      'a'
+    );
+
+    const t1: OAuthTokens = { access_token: 'p1-token', token_type: 'bearer' };
+    await p1.saveTokens(t1);
+
+    expect(await p1.tokens()).toEqual(t1);
+    expect(await p2.tokens()).toBeUndefined();
   });
 });

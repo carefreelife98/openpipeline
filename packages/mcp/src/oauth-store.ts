@@ -6,8 +6,7 @@
 
 export interface OAuthStateStore {
   get<T>(key: string): Promise<T | undefined>;
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters
-  set<T>(key: string, value: T): Promise<void>;
+  set(key: string, value: unknown): Promise<void>;
   delete(key: string): Promise<void>;
 }
 
@@ -15,18 +14,17 @@ export interface OAuthStateStore {
 export class InMemoryOAuthStateStore implements OAuthStateStore {
   private readonly map = new Map<string, unknown>();
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async get<T>(key: string): Promise<T | undefined> {
-    return this.map.has(key) ? (this.map.get(key) as T) : undefined;
+  get<T>(key: string): Promise<T | undefined> {
+    return Promise.resolve(this.map.has(key) ? (this.map.get(key) as T) : undefined);
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await, @typescript-eslint/no-unnecessary-type-parameters
-  async set<T>(key: string, value: T): Promise<void> {
+  set(key: string, value: unknown): Promise<void> {
     this.map.set(key, value);
+    return Promise.resolve();
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async delete(key: string): Promise<void> {
+  delete(key: string): Promise<void> {
     this.map.delete(key);
+    return Promise.resolve();
   }
 }

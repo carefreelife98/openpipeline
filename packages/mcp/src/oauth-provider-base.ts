@@ -47,8 +47,14 @@ export abstract class StoreBackedOAuthProvider implements OAuthClientProvider {
   }
 
   // ── store-backed state ─────────────────────────────────────────────────────
+  // Segments are `encodeURIComponent`-escaped before joining so a `:` inside a
+  // host-supplied session id (e.g. a composite `tenant:user` id) or serverKey
+  // cannot make two distinct identities collide on the same store key — e.g.
+  // session "a:b" + serverKey "c" vs. session "a" + serverKey "b:c" must not
+  // both resolve to "a:b:c:tokens".
   private async key(suffix: string): Promise<string> {
-    return `${await this.getSessionId()}:${this.opts.serverKey}:${suffix}`;
+    const sessionId = await this.getSessionId();
+    return [sessionId, this.opts.serverKey, suffix].map(encodeURIComponent).join(':');
   }
 
   async tokens(): Promise<OAuthTokens | undefined> {
