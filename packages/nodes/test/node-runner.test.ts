@@ -240,6 +240,68 @@ describe('node-runner cost guard (config.configurable.costGuard)', () => {
   });
 });
 
+describe('node-runner SUCCESS finish() serializes input/output with safeJson (#11)', () => {
+  it('does not throw through a serializing StepRecorder.finish() when the handler output contains a circular reference', async () => {
+    const spec = {
+      key: 'tool.circular-output',
+      nodeType: 'TOOL' as const,
+      displayName: 'CircularOutput',
+      description: '',
+      icon: 'x',
+      inputSchema: z.object({}),
+      // A passthrough/loose schema is what actually lets an arbitrary
+      // (circular) value through the OUTPUT schema unchanged — the schema
+      // constrains shape, not JSON-safety.
+      outputSchema: z.looseObject({ kind: z.literal('tool.circular-output') }),
+      handler: () => {
+        const circ: Record<string, unknown> = { ok: true };
+        circ.self = circ;
+        return Promise.resolve({ kind: 'tool.circular-output' as const, ...circ });
+      },
+    };
+    const node: PipelineNodeRow = {
+      id: 'n1',
+      pipelineId: 'p1',
+      nodeType: 'TOOL',
+      key: 'tool.circular-output',
+      label: 'CircularOutput',
+      inputs: {},
+    };
+    // Simulates a real serializing store adapter (e.g. Prisma writing to a
+    // Json column via JSON.stringify under the hood) — this is exactly the
+    // boundary a raw circular/BigInt value would previously blow up on,
+    // failing the node (and therefore the run) despite the "circular output
+    // still completes SUCCESS" contract enforced elsewhere.
+    const finish = vi.fn<(stepId: string, result: StepFinish) => Promise<void>>((_id, result) => {
+      JSON.stringify(result.output); // throws if not already safe
+      JSON.stringify(result.input);
+      return Promise.resolve();
+    });
+    const deps = {
+      bindingResolver: { resolveExplicit: () => ({}) },
+      stepRecorder: { start: vi.fn().mockResolvedValue('step-1'), finish },
+      llmFactory: { createModel: () => ({}) },
+      nodeMap: new Map(),
+    } as unknown as NodeRunnerDeps;
+    const runner = makeNodeRunner(node, spec, deps);
+
+    const result = await runner(makeState());
+
+    // The RAW output returned to the caller (LangGraph state) is untouched —
+    // the actual self-reference survives (`circ.self === circ`) — only the
+    // persisted copy handed to finish() is walked into a safe,
+    // sentinel-bearing shape.
+    const rawOutput = result.outputs?.n1 as Record<string, unknown>;
+    const rawSelf = rawOutput.self as Record<string, unknown>;
+    expect(rawSelf.self).toBe(rawSelf);
+
+    const [, finishArg] = finish.mock.calls[0] ?? [];
+    expect(finishArg?.status).toBe('SUCCESS');
+    expect(() => JSON.stringify(finishArg?.output)).not.toThrow();
+    expect(JSON.stringify(finishArg?.output)).toContain('[circular]');
+  });
+});
+
 describe('node-runner input-parse hint (K12)', () => {
   it('enriches an inputSchema.parse ZodError with the state-bound slot(s) that fed it, keeping VALIDATION/ZOD_PARSE classification', async () => {
     const spec = {

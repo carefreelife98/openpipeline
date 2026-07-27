@@ -1,4 +1,5 @@
 import {
+  PipelineCompileError,
   RUN_DELIVERY_MODE,
   ZERO_COST,
   type NodeSpec,
@@ -6,7 +7,7 @@ import {
   type PipelineNodeRow,
   type PipelineWithGraph,
 } from '@openpipeline/core';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 
 import { createIfNodeSpec } from '../src/built-in/if-node.js';
@@ -113,6 +114,78 @@ describe('PipelineCompiler.compile — per-call resolveContext (#E5)', () => {
 
     const compiled = await compiler.compile(graph);
     expect(compiled.nodeMap.get('n1')?.spec.description).toBe('userId=none');
+  });
+});
+
+describe('PipelineCompiler.compile — consumer validate() hook runs on every call (#10)', () => {
+  it('runs validate() on every compile() call, even when the result is served from the cache', async () => {
+    const { registry } = makeCapturingRegistry({});
+    const validate = vi.fn().mockResolvedValue(undefined);
+    const deps: CompilerDeps = { ...makeDeps(registry), validate };
+    const compiler = new PipelineCompiler(deps);
+    const graph = makeGraph('pipeline-cache', 'n1', 'tool.cache');
+
+    const first = await compiler.compile(graph, { userId: 'user-A' });
+    const second = await compiler.compile(graph, { userId: 'user-B' });
+
+    // Same cache entry served both times (proves this really was a cache hit).
+    expect(first).toBe(second);
+    // ...yet validate() still ran for BOTH callers, with each caller's own ctx.
+    expect(validate).toHaveBeenCalledTimes(2);
+    expect(validate.mock.calls[0]?.[1]).toEqual({ userId: 'user-A' });
+    expect(validate.mock.calls[1]?.[1]).toEqual({ userId: 'user-B' });
+  });
+
+  it('rejects a cache-hit compile when validate() throws for THAT caller, never silently serving the cached graph instead', async () => {
+    const { registry } = makeCapturingRegistry({});
+    let call = 0;
+    const validate = vi.fn().mockImplementation(() => {
+      call += 1;
+      if (call === 2) throw new Error('tenant not allowed');
+    });
+    const deps: CompilerDeps = { ...makeDeps(registry), validate };
+    const compiler = new PipelineCompiler(deps);
+    const graph = makeGraph('pipeline-cache-2', 'n1', 'tool.cache2');
+
+    await expect(compiler.compile(graph, { userId: 'user-A' })).resolves.toBeDefined();
+    await expect(compiler.compile(graph, { userId: 'user-B' })).rejects.toThrow(
+      'tenant not allowed'
+    );
+  });
+});
+
+describe('PipelineCompiler.compile — validateGraph failures throw a structured PipelineCompileError (#13)', () => {
+  it('throws PipelineCompileError (not a bare Error) with node-scoped entries for a required-input-slot failure', async () => {
+    const registry = {
+      get: () =>
+        Promise.resolve({
+          key: 'tool.needs-text',
+          nodeType: 'TOOL' as const,
+          displayName: 'NeedsText',
+          description: 'needs a text input',
+          icon: 'x',
+          inputSchema: z.object({ text: z.string() }),
+          outputSchema: z.object({ kind: z.literal('tool.needs-text') }),
+          handler: () => Promise.resolve({ kind: 'tool.needs-text' as const }),
+        } satisfies NodeSpec),
+    } as unknown as NodeSpecRegistry;
+    const compiler = new PipelineCompiler(makeDeps(registry));
+    // makeGraph's single node has `inputs: {}` — no binding for the required `text` slot.
+    const graph = makeGraph('pipeline-invalid', 'n1', 'tool.needs-text');
+
+    await expect(compiler.compile(graph)).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(PipelineCompileError);
+      const compileErr = err as PipelineCompileError;
+      expect(compileErr.entries).toEqual([
+        expect.objectContaining({
+          scope: 'node',
+          kind: 'INPUTS_REQUIRED_MISSING',
+          nodeId: 'n1',
+          nodeKey: 'tool.needs-text',
+        }),
+      ]);
+      return true;
+    });
   });
 });
 

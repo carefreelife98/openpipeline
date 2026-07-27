@@ -196,7 +196,18 @@ export function validateGraph(
   // exists to catch (brief Step 1: "A(entry), 고립 D"). A lone single-node
   // graph (`graph.nodes.length === 1`) is exempted — there is nothing else
   // for it to be disconnected *from* (ambiguity resolution #7).
-  if (graph.nodes.length > 1) {
+  //
+  // #14 — also gated on `graph.edges.length > 0`: a graph with ZERO edges at
+  // all (two or more independent, unconnected nodes) is not an authoring
+  // defect — it is an intentionally parallel pipeline, and the compiler has
+  // always supported multiple independent entry nodes (compiler.ts's
+  // `entryNodeIds`/`exitNodeIds` are arrays, one START->node edge per entry).
+  // Without this gate, EVERY node in a zero-edge multi-node graph is its own
+  // entry with no outgoing edge, so this loop previously flagged the entire
+  // graph as unreachable — rejecting a topology that used to compile and run
+  // fine, a behavior regression broader than the brief's actual target ("an
+  // isolated node inside a graph that HAS edges").
+  if (graph.nodes.length > 1 && graph.edges.length > 0) {
     const entrySet = new Set(entries);
     for (const n of graph.nodes) {
       const hasOutgoing = (adj.get(n.id) ?? []).length > 0;

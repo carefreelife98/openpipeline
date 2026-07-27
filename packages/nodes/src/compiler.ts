@@ -60,6 +60,18 @@ export class PipelineCompiler {
     const hasMcpNode = graph.nodes.some((n) => n.key.startsWith('mcp:'));
     const cacheKey = `${graph.pipeline.id}:${String(new Date(graph.pipeline.updatedAt).getTime())}`;
 
+    // #10 — the consumer-supplied `validate` hook (documented for
+    // tenant/permission gating via `ctx`) must run on EVERY `compile()` call,
+    // cache hit or not. Running it only before the cache lookup meant it fired
+    // for the FIRST caller that ever compiled a given pipelineId:updatedAt
+    // (the one that populated the cache entry) and was silently skipped for
+    // every other caller — a different userId/tenantId — that reused the same
+    // cache entry afterwards (#E5 residue). Ordered before the cache lookup so
+    // it structurally cannot be bypassed.
+    if (this.deps.validate) {
+      await this.deps.validate(graph, ctx);
+    }
+
     if (!hasMcpNode) {
       const idx = this.cache.findIndex((e) => e.cacheKey === cacheKey);
       const entry = idx === -1 ? undefined : this.cache[idx];
@@ -68,10 +80,6 @@ export class PipelineCompiler {
         this.cache.unshift(entry);
         return entry.compiled;
       }
-    }
-
-    if (this.deps.validate) {
-      await this.deps.validate(graph, ctx);
     }
 
     const topo = analyzeTopology(graph.nodes, graph.edges);
@@ -108,15 +116,26 @@ export class PipelineCompiler {
     // Default-ON compile-time validation: downstream cycles, unreachable
     // nodes, persisted nodeType vs. resolved spec mismatches, required input
     // slots with no binding, and dead/non-ancestor state references
-    // (#K6,#K7,#K8,#K14). Same compile-failure pathway as TOPOLOGY_NO_ENTRY /
-    // IF_MISSING_BRANCH below — the engine's run() catch treats any thrown
-    // Error here as a FAILED compile, no new error class needed. The consumer
-    // `validate` hook above runs as *additional* validation, not a replacement.
+    // (#K6,#K7,#K8,#K14). #13 — thrown as the SAME structured
+    // `PipelineCompileError` (public export) as TOPOLOGY_NO_ENTRY above and
+    // IF_MISSING_BRANCH below, not a bare `Error` — a consumer using
+    // `PipelineCompiler` directly (not just via the engine's run() catch,
+    // which only cares that *something* threw) needs `.entries` with
+    // `scope`/`kind`/`nodeId` to render a structured error instead of parsing
+    // a message string. The consumer `validate` hook above still runs as
+    // *additional* validation, not a replacement for this pass.
     const issues = validateGraph(graph, specByNodeId);
     if (issues.length > 0) {
-      throw new Error(
-        `Pipeline graph validation failed (${String(issues.length)}): ` +
-          issues.map((i) => `[${i.code}] ${i.message}`).join('; ')
+      const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
+      throw new PipelineCompileError(
+        issues.map((i) => ({
+          scope: i.nodeId ? ('node' as const) : ('graph' as const),
+          kind: i.code,
+          nodeId: i.nodeId,
+          nodeKey: i.nodeId ? nodeById.get(i.nodeId)?.key : undefined,
+          message: i.message,
+        })),
+        graph.pipeline.name
       );
     }
 

@@ -3,6 +3,7 @@ import {
   computeRemainingSchema,
   toPipelineError,
   createCostAccumulator,
+  safeJson,
   PipelineAbortedError,
   PipelineNodeExecutionError,
   NOOP_LOGGER,
@@ -170,10 +171,21 @@ export function makeNodeRunner(
       const finishedAt = new Date().toISOString();
       const totalCost = costAcc.total();
 
+      // #11 — `parsed`/`validatedOutput` are arbitrary handler-produced
+      // values (the input schema and output schema constrain SHAPE, not
+      // JSON-safety: a passthrough/z.any() slot can still carry a circular
+      // reference or a BigInt straight through). This is the step-level
+      // write, which lands BEFORE the run-level terminal write that already
+      // has this same guard (runtime/index.ts) — an adapter that actually
+      // serializes on the way to storage (e.g. Prisma's Json columns) would
+      // otherwise throw HERE first, failing the node (and hence the run)
+      // even though "a circular/BigInt output still completes the run as
+      // SUCCESS" is a guaranteed contract elsewhere. `cost`/`status` are
+      // already well-typed, safe values — no walk needed.
       await deps.stepRecorder.finish(stepId, {
         status: 'SUCCESS',
-        input: parsed,
-        output: validatedOutput,
+        input: safeJson(parsed),
+        output: safeJson(validatedOutput),
         cost: totalCost,
       });
 

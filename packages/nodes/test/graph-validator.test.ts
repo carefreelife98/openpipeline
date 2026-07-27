@@ -206,4 +206,25 @@ describe('validateGraph', () => {
     const issues = validateGraph(graph, new Map());
     expect(issues).toEqual([]);
   });
+
+  // #14 — a multi-node graph with ZERO edges (every node independently
+  // entry AND exit) is an intentionally parallel pipeline, not the
+  // brief's orphan-inside-a-connected-graph defect. The compiler has
+  // always supported multiple independent entry nodes.
+  it('remains VALID for a multi-node graph with no edges at all — independent parallel entries, not orphans (#14)', () => {
+    const graph = graphOf([], ['a', 'b', 'c']);
+    const issues = validateGraph(graph, specsFor(graph));
+    expect(issues).toEqual([]);
+  });
+
+  it('still flags a node with no incoming/outgoing edges when the graph DOES have edges elsewhere (#14 — narrower gate, not removed)', () => {
+    // Unchanged from the pre-#14 behavior: A->B is a real connected
+    // pipeline; ORPHAN sits disconnected inside it — still an authoring
+    // defect once edges exist anywhere in the graph.
+    const graph = graphOf(['A>B'], ['ORPHAN']);
+    const issues = validateGraph(graph, specsFor(graph));
+    expect(issues).toEqual([
+      expect.objectContaining({ code: 'TOPOLOGY_UNREACHABLE', nodeId: 'ORPHAN' }),
+    ]);
+  });
 });
