@@ -89,12 +89,14 @@ function isZodTypeField(value: unknown): value is z.ZodType {
  *     alone only requires >=1 zero-indegree node SOMEWHERE in the graph, so a
  *     rogue cycle downstream of a legitimate entry sails past it and only dies
  *     later at LangGraph's `recursionLimit` as an opaque RUNTIME failure (K8).
- *   - TOPOLOGY_UNREACHABLE: a node no entry's forward edges ever reach. Given
- *     that every zero-indegree node counts as an entry (so a genuinely
- *     isolated, zero-edge node is its own entry and is never flagged — see
- *     `analyzeTopology`'s "isolated node is both entry and exit" contract),
- *     this only fires for a cyclic island with no legitimate external entry
- *     into it (K14).
+ *   - TOPOLOGY_UNREACHABLE: covers two shapes. (a) A cyclic island with no
+ *     legitimate external entry pointing into it (also implies
+ *     TOPOLOGY_CYCLE). (b) An orphan node — indegree 0 AND outdegree 0 —
+ *     inside a graph with more than one node: disconnected from every other
+ *     node, yet the compiler would otherwise silently wire it
+ *     START->orphan->END and run it standalone. A lone single-node,
+ *     zero-edge graph is exempt from (b) — there is nothing else for it to
+ *     be disconnected from.
  *   - NODE_TYPE_MISMATCH: the persisted `node.nodeType` disagrees with the
  *     resolved spec's `nodeType` — e.g. a forged IF node pointed at a TOOL
  *     spec would otherwise bypass the compiler's true/false branch wiring
@@ -155,9 +157,17 @@ export function validateGraph(
     });
   }
 
-  // 2) Reachability — BFS forward from every zero-indegree node. A genuinely
-  // isolated zero-edge node has indegree 0, so it is trivially its own entry
-  // and is never flagged here.
+  // 2) Reachability — BFS forward from every zero-indegree node. This alone
+  // only catches a *cyclic island*: a subgraph with no external entry pointing
+  // into it, where every member has indegree >= 1 from within the island
+  // (walking a finite acyclic graph backwards from any node always terminates
+  // at an indegree-0 node, so a genuinely acyclic node is always reachable —
+  // by construction, an UNREACHABLE result from this loop alone implies the
+  // graph is cyclic, and TOPOLOGY_CYCLE above will already have fired for it).
+  // It can NOT see an orphan node (indegree 0, outdegree 0): such a node is
+  // seeded directly into `reachable` as its own trivial entry. That case is
+  // handled separately below (2b), since it needs the opposite signal
+  // (zero *outgoing* edges, not "not walked to").
   const reachable = new Set<string>(entries);
   const stack = [...entries];
   while (stack.length) {
@@ -176,6 +186,27 @@ export function validateGraph(
         nodeId: n.id,
         message: `node "${n.label}" unreachable from any entry`,
       });
+    }
+  }
+
+  // 2b) Orphan-node detection — a node with in-degree 0 AND out-degree 0
+  // inside a multi-node graph is disconnected from every other node in the
+  // pipeline. The compiler still silently wires it START->orphan->END and
+  // executes it standalone, which is the exact authoring defect this gate
+  // exists to catch (brief Step 1: "A(entry), 고립 D"). A lone single-node
+  // graph (`graph.nodes.length === 1`) is exempted — there is nothing else
+  // for it to be disconnected *from* (ambiguity resolution #7).
+  if (graph.nodes.length > 1) {
+    const entrySet = new Set(entries);
+    for (const n of graph.nodes) {
+      const hasOutgoing = (adj.get(n.id) ?? []).length > 0;
+      if (entrySet.has(n.id) && !hasOutgoing) {
+        issues.push({
+          code: 'TOPOLOGY_UNREACHABLE',
+          nodeId: n.id,
+          message: `node "${n.label}" has no incoming or outgoing edges — disconnected from the rest of the graph`,
+        });
+      }
     }
   }
 

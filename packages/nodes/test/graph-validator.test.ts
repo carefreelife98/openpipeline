@@ -106,6 +106,22 @@ describe('validateGraph', () => {
     expect(issues).toEqual([]);
   });
 
+  it('flags an orphan node with no edges at all inside a multi-node graph (TOPOLOGY_UNREACHABLE)', () => {
+    // A->B is a normal, reachable pipeline; ORPHAN has zero incoming and zero
+    // outgoing edges. This is the brief's Step-1 case verbatim ("A(entry),
+    // 고립 D") and is distinct from ambiguity resolution #7 (a *single*-node,
+    // zero-edge graph is valid): here ORPHAN sits inside a larger graph that
+    // has its own legitimate entries, so it is an authoring defect — the
+    // compiler would otherwise silently wire it START->ORPHAN->END and run it
+    // standalone. It must also not be reported as TOPOLOGY_CYCLE (it has no
+    // edges, so it cannot be part of a cycle).
+    const graph = graphOf(['A>B'], ['ORPHAN']);
+    const issues = validateGraph(graph, specsFor(graph));
+    expect(issues).toEqual([
+      expect.objectContaining({ code: 'TOPOLOGY_UNREACHABLE', nodeId: 'ORPHAN' }),
+    ]);
+  });
+
   it('rejects persisted nodeType that differs from the resolved spec (NODE_TYPE_MISMATCH)', () => {
     const graph = graphOf([], ['gate']);
     const gateNode = getNode(graph, 'gate');
