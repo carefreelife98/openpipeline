@@ -2,7 +2,7 @@
 // its MCP servers with these — no database required.
 
 export type McpTransportType = 'http' | 'stdio';
-export type McpAuthType = 'none' | 'oauth_preregistered';
+export type McpAuthType = 'none' | 'oauth_preregistered' | 'oauth_dynamic';
 
 export interface McpServerConfig {
   /** Stable provider key, used in node keys: `mcp:<key>:<tool>`. */

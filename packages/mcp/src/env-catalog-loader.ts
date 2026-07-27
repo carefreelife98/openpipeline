@@ -50,14 +50,20 @@ export function createEnvCatalogLoader(options: EnvCatalogLoaderOptions): Catalo
       const providers: ResolvedProvider[] = [];
 
       for (const server of servers) {
-        const token =
-          (options.policy?.resolveToken
-            ? await options.policy.resolveToken(server, policyCtx)
-            : undefined) ?? server.accessToken;
+        const authProvider = options.policy?.resolveAuthProvider
+          ? await options.policy.resolveAuthProvider(server, policyCtx)
+          : undefined;
+
+        const token = authProvider
+          ? undefined
+          : ((options.policy?.resolveToken
+              ? await options.policy.resolveToken(server, policyCtx)
+              : undefined) ?? server.accessToken);
 
         let client: MultiServerMCPClient;
         try {
-          client = createClient(server, server.authType === 'none' ? undefined : token);
+          const auth = server.authType === 'none' ? undefined : (authProvider ?? token);
+          client = createClient(server, auth);
           clients.push(client);
         } catch (err) {
           logger.warn(`[mcp] failed to create client for "${server.key}"`, { err });

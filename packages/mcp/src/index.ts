@@ -18,3 +18,10 @@ export {
 export type { CatalogPolicy, PolicyContext, PolicyTool } from './catalog-policy.js';
 export { createEnvCatalogLoader, type EnvCatalogLoaderOptions } from './env-catalog-loader.js';
 export { McpNodeResolverImpl, parseMcpKey, type ParsedMcpKey } from './node-resolver.js';
+export { type OAuthStateStore, InMemoryOAuthStateStore } from './oauth-store.js';
+export {
+  StoreBackedOAuthProvider,
+  type StoreBackedOAuthProviderOptions,
+} from './oauth-provider-base.js';
+export type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
+export type { OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
