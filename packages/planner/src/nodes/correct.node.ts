@@ -35,6 +35,7 @@ export function correctNode(
   maxAttempts: number
 ): Promise<Partial<PlannerState>> {
   checkAbort(runtime.signal);
+  runtime.logger.debug(`[PipelinePlanner] correct attempt=${String(state.attempts)}`);
   runtime.onProgress?.({ phase: 'correct', attempt: state.attempts });
 
   if (state.attempts >= maxAttempts) {

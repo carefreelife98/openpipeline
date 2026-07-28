@@ -34,11 +34,24 @@ export interface PipelinePlannerOptions {
   maxAttempts?: number;
   /** Sampling temperature passed to `llmFactory.createModel`. Default 0.3. */
   temperature?: number;
+  /**
+   * Receives one `debug(...)` call per node entry (`design`/`validate`/`correct`,
+   * phase + attempt number) throughout `plan()`. Defaults to `NOOP_LOGGER`
+   * (no-op) if omitted.
+   */
   logger?: Logger;
 }
 
 export interface PlanRequest {
   instruction: string;
+  /**
+   * Reserved for the MCP-catalog path (T2 — `catalogLoader`/`mcpNodeResolver`
+   * loading a live tool catalog for the `intent -> select` routing D2
+   * describes). Accepted here already so `PlanRequest`'s shape doesn't need a
+   * breaking change once T2 lands, but **not read anywhere in this build**:
+   * the no-MCP design/validate/correct loop has no catalog to load and no use
+   * for it (T1 review round 3, M3).
+   */
   context?: RunContext;
   signal?: AbortSignal;
   onProgress?: (event: PlannerProgressEvent) => void;
