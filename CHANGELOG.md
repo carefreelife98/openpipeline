@@ -31,7 +31,15 @@ All 8 `@openpipeline/*` packages (`core`, `nodes`, `runtime`, `mcp`,
   site in either store was converted — `store-prisma`'s cross-pipeline
   node-id ownership guard (`assertNodeIdsBelongToPipeline`) is a distinct
   failure mode (constraint violation, not "pipeline does not exist") and is
-  unchanged.
+  unchanged. `PrismaPipelineStore.save()` on a nonexistent `id` (the
+  update path, `tx.pipeline.update`) is also unchanged: it still surfaces
+  Prisma's own native `P2025` ("record not found") error, not
+  `PipelineNotFoundError` — deliberately not converted, since
+  `PrismaClientLike` (`prisma-types.ts`) is a hand-written structural
+  interface with no dependency on the generated client's error classes, and
+  duck-typing a Prisma error code off an untyped `unknown` catch value is
+  exactly the kind of guess this package's structural-typing approach is
+  meant to avoid.
 - **`@openpipeline/runtime`**: no code change — `PipelineEngine.load` and
   `PipelineEngine.run` already propagate whatever `store.load` throws
   unwrapped, so `PipelineNotFoundError` reaches callers with its type intact.
@@ -43,12 +51,20 @@ All 8 `@openpipeline/*` packages (`core`, `nodes`, `runtime`, `mcp`,
   for it. This is a different surface than a mid-run node failure (which a
   run row already exists for, and which `execute()`'s catch block classifies
   as a generic `FAILED` status instead of rejecting).
-- **`@openpipeline/server`** (behavior change — previously `500`):
+- **`@openpipeline/server`** (behavior change — previously `500`/`400`, see
+  per-route notes below):
   - `GET /pipeline/:id` now returns **404** `{ error: "Pipeline not found: <id>" }`
     for a `PipelineNotFoundError` from `engine.load` (was a generic `500` via
     the top-level catch-all).
   - `POST /pipeline/run` now returns **404** for a `PipelineNotFoundError`
-    from `engine.run` (was a generic `500`).
+    from `engine.run` (was a generic `500`). It also now validates
+    `pipelineId` the same way `POST /pipeline/run/stream` already did —
+    **400** `{ error: "pipelineId is required and must be a non-empty string" }`
+    for a missing/non-string `pipelineId`, checked before the engine is
+    touched. This is a fix, not new-in-this-PR behavior drift: the
+    `PipelineNotFoundError` wiring above would otherwise have turned a
+    missing body field into a misleading 404 `Pipeline not found: undefined`
+    instead of a 400.
   - `POST /pipeline/run/stream` now returns **404** (headers unsent, before
     any SSE frame) for a `PipelineNotFoundError` from `startRun` (was a
     generic `400` — see the 0.2.0 entry for why this route already validates

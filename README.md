@@ -228,9 +228,14 @@ import { createPipelineHandlers, createNodeHttpHandler } from '@openpipeline/ser
 
 const handlers = createPipelineHandlers(engine);
 createServer(createNodeHttpHandler(handlers)).listen(3000);
-// POST /pipeline, GET /pipeline/:id, GET /pipeline/:id/runs,
-// POST /pipeline/run (non-streaming), POST /pipeline/run/stream (starts a run
-// and streams it, SSE), GET /pipeline/runs/:runId/stream (attach to an
+// POST /pipeline, GET /pipeline/:id (404 if the pipeline doesn't exist),
+// GET /pipeline/:id/runs,
+// POST /pipeline/run (non-streaming; 400 for a missing/non-string
+// pipelineId, 404 if the pipeline doesn't exist),
+// POST /pipeline/run/stream (starts a run and streams it, SSE; 400 for a
+// missing/non-string pipelineId, 404 if the pipeline doesn't exist — both
+// with headers unsent, before any SSE frame),
+// GET /pipeline/runs/:runId/stream (attach to an
 // already in-flight run's SSE stream; 404 if it's unknown or has finished —
 // it never starts a run), POST /pipeline/run/:runId/abort (404 if unknown/finished)
 ```
