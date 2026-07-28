@@ -8,7 +8,7 @@ import type {
   PipelineWithGraph,
   RunSummary,
 } from '@openpipeline/core';
-import { ZERO_COST } from '@openpipeline/core';
+import { PipelineNotFoundError, ZERO_COST } from '@openpipeline/core';
 import type { RunHandle, RunOptions, RunResult } from '@openpipeline/runtime';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
@@ -264,6 +264,36 @@ describe('createNodeHttpHandler routing', () => {
     expect(engine.runCalls).toEqual([{ pipelineId: 'p1' }]);
   });
 
+  it('POST /pipeline/run 400s (not 404) for a missing pipelineId — never calls engine.run (store.load never reached)', async () => {
+    const { base, engine } = ctx();
+
+    const res = await fetch(`${base}/pipeline/run`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'pipelineId is required and must be a non-empty string',
+    });
+    expect(engine.runCalls).toHaveLength(0);
+  });
+
+  it('POST /pipeline/run 400s for a non-string pipelineId — never calls engine.run', async () => {
+    const { base, engine } = ctx();
+
+    const res = await fetch(`${base}/pipeline/run`, {
+      method: 'POST',
+      body: JSON.stringify({ pipelineId: 42 }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'pipelineId is required and must be a non-empty string',
+    });
+    expect(engine.runCalls).toHaveLength(0);
+  });
+
   it('POST /pipeline/run/:runId/abort 404s for an unknown/not-in-flight run (#S11d)', async () => {
     const { base, engine } = ctx();
 
@@ -390,14 +420,15 @@ describe('createNodeHttpHandler routing', () => {
     expect(engine.runCalls).toHaveLength(0);
   });
 
-  it('POST /pipeline/run/stream 400s (headers unsent, not a raw JSON body inside an already-open SSE stream) when the run fails to start — e.g. a nonexistent pipelineId (#8)', async () => {
+  it('POST /pipeline/run/stream 400s (headers unsent, not a raw JSON body inside an already-open SSE stream) when the run fails to start with a non-PipelineNotFoundError — e.g. an infra failure (#8)', async () => {
     const { base, engine } = ctx();
-    // Simulate `store.load` rejecting inside `engine.run()` for an unknown
-    // pipelineId — exactly the scenario that used to reject AFTER
-    // `res.writeHead(200, SSE_HEADERS)` had already been sent.
+    // A generic (non-typed) failure from engine.run — e.g. a DB outage —
+    // must NOT be reclassified as 404; it keeps the pre-existing headers-
+    // unsent 400 behavior this route already had before PipelineNotFoundError
+    // existed.
     const rejecting = vi.spyOn(engine, 'run').mockImplementation((opts: RunOptions) => {
       engine.runCalls.push(opts);
-      return Promise.reject(new Error('Pipeline not found: nope'));
+      return Promise.reject(new Error('ECONNREFUSED: connection refused'));
     });
 
     const res = await fetch(`${base}/pipeline/run/stream`, {
@@ -407,7 +438,80 @@ describe('createNodeHttpHandler routing', () => {
 
     expect(res.status).toBe(400);
     expect(res.headers.get('content-type')).not.toBe('text/event-stream');
+    expect(await res.json()).toEqual({ error: 'ECONNREFUSED: connection refused' });
+    rejecting.mockRestore();
+  });
+
+  it('POST /pipeline/run/stream 404s (headers unsent, before any SSE frame) for a PipelineNotFoundError — never starts a run', async () => {
+    const { base, engine } = ctx();
+    const rejecting = vi.spyOn(engine, 'run').mockImplementation((opts: RunOptions) => {
+      engine.runCalls.push(opts);
+      return Promise.reject(new PipelineNotFoundError('nope'));
+    });
+
+    const res = await fetch(`${base}/pipeline/run/stream`, {
+      method: 'POST',
+      body: JSON.stringify({ pipelineId: 'nope' }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get('content-type')).toBe('application/json');
+    expect(res.headers.get('content-type')).not.toBe('text/event-stream');
     expect(await res.json()).toEqual({ error: 'Pipeline not found: nope' });
+    rejecting.mockRestore();
+  });
+
+  it('GET /pipeline/:id 404s when engine.load rejects with PipelineNotFoundError', async () => {
+    const { base, engine } = ctx();
+    engine.load = () => Promise.reject(new PipelineNotFoundError('missing-pipeline'));
+
+    const res = await fetch(`${base}/pipeline/missing-pipeline`);
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Pipeline not found: missing-pipeline' });
+  });
+
+  it('GET /pipeline/:id still 500s for a non-PipelineNotFoundError (infra failure is not misclassified as 404)', async () => {
+    const { base, engine } = ctx();
+    engine.load = () => Promise.reject(new Error('ECONNREFUSED: connection refused'));
+
+    const res = await fetch(`${base}/pipeline/any-id`);
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: 'ECONNREFUSED: connection refused' });
+  });
+
+  it('POST /pipeline/run 404s when the run rejects with PipelineNotFoundError', async () => {
+    const { base, engine } = ctx();
+    const rejecting = vi.spyOn(engine, 'run').mockImplementation((opts: RunOptions) => {
+      engine.runCalls.push(opts);
+      return Promise.reject(new PipelineNotFoundError('missing-pipeline'));
+    });
+
+    const res = await fetch(`${base}/pipeline/run`, {
+      method: 'POST',
+      body: JSON.stringify({ pipelineId: 'missing-pipeline' }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Pipeline not found: missing-pipeline' });
+    rejecting.mockRestore();
+  });
+
+  it('POST /pipeline/run still 500s for a non-PipelineNotFoundError (infra failure is not misclassified as 404)', async () => {
+    const { base, engine } = ctx();
+    const rejecting = vi.spyOn(engine, 'run').mockImplementation((opts: RunOptions) => {
+      engine.runCalls.push(opts);
+      return Promise.reject(new Error('ECONNREFUSED: connection refused'));
+    });
+
+    const res = await fetch(`${base}/pipeline/run`, {
+      method: 'POST',
+      body: JSON.stringify({ pipelineId: 'p1' }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: 'ECONNREFUSED: connection refused' });
     rejecting.mockRestore();
   });
 

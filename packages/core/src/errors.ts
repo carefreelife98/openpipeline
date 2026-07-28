@@ -42,3 +42,18 @@ export class PipelineNodeExecutionError extends Error {
 export class PipelineConflictError extends Error {
   override readonly name = 'PipelineConflictError';
 }
+
+/**
+ * Thrown by a `PipelineStore` when a `pipelineId` does not resolve to any
+ * stored pipeline. Lets consumers distinguish "pipeline does not exist"
+ * (404-shaped) from infrastructure failures (DB outage, connection error,
+ * etc.), which must never be misclassified as this error — see each store's
+ * `load()` and the `@openpipeline/server` HTTP handlers for the
+ * instanceof-gated 404 mapping.
+ */
+export class PipelineNotFoundError extends Error {
+  override readonly name = 'PipelineNotFoundError';
+  constructor(readonly pipelineId: string) {
+    super(`Pipeline not found: ${pipelineId}`);
+  }
+}

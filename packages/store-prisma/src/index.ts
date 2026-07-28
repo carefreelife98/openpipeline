@@ -1,4 +1,5 @@
 import {
+  PipelineNotFoundError,
   ZERO_COST,
   mergeCost,
   type PipelineStore,
@@ -81,7 +82,7 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
       where: { id: pipelineId },
       include: { nodes: { where: { isDeleted: false } }, edges: true },
     });
-    if (!wf) throw new Error(`Pipeline not found: ${pipelineId}`);
+    if (!wf) throw new PipelineNotFoundError(pipelineId);
 
     const { nodes, edges, ...row } = wf;
     const pipeline: PipelineRow = {

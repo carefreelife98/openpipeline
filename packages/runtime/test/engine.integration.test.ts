@@ -1,6 +1,6 @@
 import { getEventListeners } from 'node:events';
 
-import { defineNode, type PipelineEvent } from '@openpipeline/core';
+import { defineNode, PipelineNotFoundError, type PipelineEvent } from '@openpipeline/core';
 import { createIfNodeSpec, createLlmInvokeNodeSpec } from '@openpipeline/nodes';
 import { MemoryStore } from '@openpipeline/store-memory';
 import { describe, it, expect, vi } from 'vitest';
@@ -720,5 +720,83 @@ describe('PipelineEngine end-to-end', () => {
     // The late subscribe must not resurrect a listener Set for this finished run.
     expect(listeners.has(runId)).toBe(false);
     expect(receivedAfterFinish).toEqual([]);
+  });
+
+  describe('PipelineEngine.load — typed not-found propagation', () => {
+    it('rejects with PipelineNotFoundError (carrying pipelineId) for an unknown pipeline, unwrapped', async () => {
+      const engine = makeEngine();
+
+      let caught: unknown;
+      try {
+        await engine.load('does-not-exist');
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(PipelineNotFoundError);
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as PipelineNotFoundError).pipelineId).toBe('does-not-exist');
+    });
+  });
+
+  describe('PipelineEngine.run — typed not-found propagation (store.load runs before createRun)', () => {
+    it('rejects the run() call itself — not `done` — for an unknown pipeline, and never creates a run row', async () => {
+      // `run()` calls `store.load(pipelineId)` BEFORE `store.createRun(...)`
+      // and before `execute()` is ever invoked (see runtime/src/index.ts).
+      // A PipelineNotFoundError thrown there is not caught anywhere inside
+      // `run()`, so the async function itself rejects — callers must catch
+      // it at the `await engine.run(...)` call site, not via `handle.done`.
+      const store = new MemoryStore();
+      const engine = new PipelineEngine({ store, llmFactory: stubLlmFactory });
+
+      let caught: unknown;
+      try {
+        await engine.run({ pipelineId: 'does-not-exist' });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(PipelineNotFoundError);
+      expect((caught as PipelineNotFoundError).pipelineId).toBe('does-not-exist');
+      // No run row was ever created — createRun() is unreachable once
+      // store.load() has already thrown.
+      expect(await store.listRuns('does-not-exist')).toEqual([]);
+    });
+  });
+
+  describe('PipelineEngine — infra failure characterization (must NOT become PipelineNotFoundError anywhere)', () => {
+    it('engine.load propagates a generic store failure unchanged', async () => {
+      const store = new MemoryStore();
+      const infraError = new Error('ECONNREFUSED: connection refused');
+      vi.spyOn(store, 'load').mockRejectedValue(infraError);
+      const engine = new PipelineEngine({ store, llmFactory: stubLlmFactory });
+
+      let caught: unknown;
+      try {
+        await engine.load('any-id');
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBe(infraError);
+      expect(caught).not.toBeInstanceOf(PipelineNotFoundError);
+    });
+
+    it('engine.run() itself rejects with the generic store failure unchanged (never reclassified)', async () => {
+      const store = new MemoryStore();
+      const infraError = new Error('ECONNREFUSED: connection refused');
+      vi.spyOn(store, 'load').mockRejectedValue(infraError);
+      const engine = new PipelineEngine({ store, llmFactory: stubLlmFactory });
+
+      let caught: unknown;
+      try {
+        await engine.run({ pipelineId: 'any-id' });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBe(infraError);
+      expect(caught).not.toBeInstanceOf(PipelineNotFoundError);
+    });
   });
 });

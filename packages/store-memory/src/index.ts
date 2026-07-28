@@ -1,4 +1,6 @@
 import {
+  PipelineNotFoundError,
+  mergeCost,
   type PipelineStore,
   type StepRecorder,
   type PipelineWithGraph,
@@ -14,7 +16,6 @@ import {
   type CostBundle,
   type RunStatus,
   type RunStepStatus,
-  mergeCost,
 } from '@openpipeline/core';
 
 interface StoredRun {
@@ -80,7 +81,7 @@ export class MemoryStore implements PipelineStore, StepRecorder {
 
   load(pipelineId: string): Promise<PipelineWithGraph> {
     const pipeline = this.pipelines.get(pipelineId);
-    if (!pipeline) throw new Error(`Pipeline not found: ${pipelineId}`);
+    if (!pipeline) throw new PipelineNotFoundError(pipelineId);
     return Promise.resolve({
       pipeline,
       nodes: this.nodes.get(pipelineId) ?? [],
