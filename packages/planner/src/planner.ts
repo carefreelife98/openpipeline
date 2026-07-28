@@ -47,6 +47,15 @@ function buildPlannerGraph(runtime: PlannerRuntime, maxAttempts: number) {
   const design = (state: PlannerState) => designNode(state, runtime);
   const validate = (state: PlannerState) => validateNode(state, runtime);
   const correct = (state: PlannerState) => correctNode(state, runtime, maxAttempts);
+  // T1 review round 3, M6: a schema-parse failure has no `PlannerDraft` to
+  // build a `PipelineWithGraph` from, so `validate` can't run at all for this
+  // round — route straight to `correct` instead. `designNode` sets
+  // `designError` if and only if THIS attempt failed to parse, and
+  // unconditionally clears it back to `undefined` on every successful parse
+  // (mirroring `designFeedback`'s own clearing discipline), so it can never
+  // be stale here.
+  const routeAfterDesign = (state: PlannerState) =>
+    state.designError !== undefined ? 'correct' : 'validate';
   const routeAfterValidate = (state: PlannerState) =>
     state.validationIssues.length === 0 ? 'end' : 'correct';
   // Trusts `correctNode`'s own continue/stop decision instead of
@@ -70,7 +79,10 @@ function buildPlannerGraph(runtime: PlannerRuntime, maxAttempts: number) {
     .addNode('validate', validate as never)
     .addNode('correct', correct as never)
     .addEdge(START, 'design')
-    .addEdge('design', 'validate')
+    .addConditionalEdges('design', routeAfterDesign as never, {
+      validate: 'validate',
+      correct: 'correct',
+    })
     .addConditionalEdges('validate', routeAfterValidate as never, { end: END, correct: 'correct' })
     .addConditionalEdges('correct', routeAfterCorrect as never, { end: END, design: 'design' })
     .compile();
@@ -112,6 +124,21 @@ export class PipelinePlanner {
     this.modelId = options.modelId;
     this.specsInput = options.specs;
     this.maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+    // T1 review round 3, I1-R3: `maxAttempts` used to flow unvalidated into
+    // BOTH loop-stop conditions (`correct.node.ts`'s `state.attempts >=
+    // maxAttempts` gate and `recursionLimit: maxAttempts * 3 + 2` below) —
+    // poisoning it broke both simultaneously instead of just one. `NaN` is
+    // the realistic path (`Number(unset/non-numeric env var)`; `??` does NOT
+    // default `NaN`, only `null`/`undefined`): `attempts >= NaN` is always
+    // `false` and `recursionLimit: NaN` never trips LangGraph's own check
+    // either, so the planner called the model forever, at real cost, with no
+    // error. `0`/negative/non-integer values are the same class of bug in
+    // the other direction (an internal LangGraph `GraphRecursionError` or
+    // `recursionLimit` rejection instead of the documented `PlannerResult`).
+    // One guard closes all of them.
+    if (!Number.isInteger(this.maxAttempts) || this.maxAttempts < 1) {
+      throw new Error('[PipelinePlanner] maxAttempts must be an integer >= 1.');
+    }
     this.temperature = options.temperature ?? DEFAULT_TEMPERATURE;
     this.logger = options.logger ?? NOOP_LOGGER;
   }
@@ -164,10 +191,16 @@ export class PipelinePlanner {
     const finalState = readPlannerState(rawOutput);
 
     if (!finalState.draft) {
-      // Structurally unreachable via the graph wired in buildPlannerGraph
-      // (design always runs, and always populates `draft`, before any path
-      // can reach END) — kept as a defensive invariant check rather than an
-      // `as PipelineDraft` cast that would hide a future wiring regression.
+      // Reachable in exactly one case since T1 review round 3's M6 fix:
+      // EVERY attempt, including the last, failed `PlannerDraftSchema.parse`
+      // (a schema-shape defect, never a graph-structure one — see
+      // `designNode`/`routeAfterDesign`), so no `PlannerDraft` was ever
+      // produced to validate or return. Per the review's "unresolvedValidationErrors
+      // entry or a clear error — pick the existing exhaustion shape": there is
+      // no draft here to attach `unresolvedValidationErrors` to, so this
+      // throw — an EXISTING shape, not a new one — is the one that applies;
+      // it also still covers the (structurally unreachable via the graph
+      // wired in buildPlannerGraph) defensive case of a wiring regression.
       throw new Error('[PipelinePlanner] planning finished with no draft produced.');
     }
 

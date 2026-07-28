@@ -1,6 +1,7 @@
 import { HumanMessage } from '@langchain/core/messages';
 import { NOOP_LOGGER, PipelineAbortedError } from '@openpipeline/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import { designNode } from '../src/nodes/design.node.js';
 import { PipelinePlanner } from '../src/planner.js';
@@ -47,6 +48,63 @@ function validRawDraft(): unknown {
 function danglingEdgeRawDraft(): unknown {
   const draft = validRawDraft() as { nodes: unknown[]; edges: unknown[] };
   return { nodes: draft.nodes, edges: [{ from: 'n1', to: 'n3' }] };
+}
+
+/** Two distinct nodes both authored with the short id "n1" — an LLM mistake, not a correction-round id reuse. */
+function duplicateNodeIdRawDraft(): unknown {
+  return {
+    nodes: [
+      {
+        id: 'n1',
+        key: echoSpec.key,
+        label: 'Echo A',
+        inputs: { text: { kind: 'literal', value: 'a' } },
+      },
+      {
+        id: 'n1',
+        key: shoutSpec.key,
+        label: 'Echo B',
+        inputs: { text: { kind: 'literal', value: 'b' } },
+      },
+    ],
+    edges: [],
+  };
+}
+
+/** A malformed structured-output payload that fails `PlannerDraftSchema.parse` (empty `nodes`, min(1)). */
+function malformedRawDraft(): unknown {
+  return { nodes: [], edges: [] };
+}
+
+/**
+ * Stubs `crypto.randomUUID` with a deterministic counter so a test can assert
+ * exactly which minted id ends up where (T1 review round 3, M2). Returns the
+ * ids minted so far (in minting order) and a restore function — always call
+ * `restore()`, even on failure, since this replaces a real Node global.
+ */
+function stubSequentialUuids(): {
+  minted: string[];
+  restore: () => void;
+} {
+  const minted: string[] = [];
+  let counter = 0;
+  const spy = vi.spyOn(crypto, 'randomUUID').mockImplementation(() => {
+    counter += 1;
+    // Not a "real" UUID, but structurally shaped like one (5 dash-separated
+    // groups) so it can't be confused with a short id, matching what the
+    // production code's own return-type contract requires here.
+    const id = `00000000-0000-4000-8000-${String(counter).padStart(12, '0')}` as ReturnType<
+      typeof crypto.randomUUID
+    >;
+    minted.push(id);
+    return id;
+  });
+  return {
+    minted,
+    restore: () => {
+      spy.mockRestore();
+    },
+  };
 }
 
 function findHumanMessageText(messages: readonly unknown[]): string {
@@ -96,11 +154,26 @@ describe('PipelinePlanner.plan — no-MCP core loop', () => {
       specs: testSpecs,
     });
 
-    const result = await planner.plan({ instruction: 'Echo some text, then shout it.' });
+    // T1 review round 3, M2: cross-attempt UUID stability (D4) was only
+    // proven one level below the public API (test (d) calls `designNode`
+    // directly). Stubbing the id source here and asserting against the
+    // *first* minted UUID exercises `state.ts`'s `idMap` merge reducer for
+    // real: if it didn't survive the correction round, attempt 2 would mint
+    // a FRESH uuid for "n1" instead of reusing the first one.
+    const { minted, restore } = stubSequentialUuids();
+    let result: Awaited<ReturnType<typeof planner.plan>>;
+    try {
+      result = await planner.plan({ instruction: 'Echo some text, then shout it.' });
+    } finally {
+      restore();
+    }
 
     expect(result.attempts).toBe(2);
     expect(result.unresolvedValidationErrors).toBeUndefined();
     expect(result.draft.nodes).toHaveLength(2);
+    // n1 is the first short id `buildIdAssignment` resolves on attempt 1, so
+    // the first uuid minted must be the one that survives into the final draft.
+    expect(result.draft.nodes[0]?.id).toBe(minted[0]);
 
     expect(model.calls).toHaveLength(2);
     const secondPrompt = findHumanMessageText(model.calls[1]?.messages ?? []);
@@ -267,6 +340,60 @@ describe('PipelinePlanner.plan — no-MCP core loop', () => {
     expect(result.plannerWarnings).toHaveLength(1);
     expect(result.plannerWarnings?.[0]).toContain('tool.unconvertible');
   });
+
+  it('(i) duplicate short ids from the LLM produce a clear correction instead of a misleading TOPOLOGY_CYCLE (T1 review round 3, M5)', async () => {
+    const model = new FakeChatModel([duplicateNodeIdRawDraft(), validRawDraft()]);
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+    });
+
+    const result = await planner.plan({ instruction: 'Echo some text, then shout it.' });
+
+    expect(result.attempts).toBe(2);
+    expect(result.unresolvedValidationErrors).toBeUndefined();
+    expect(model.calls).toHaveLength(2);
+    const secondPrompt = findHumanMessageText(model.calls[1]?.messages ?? []);
+    // The feedback must name the offending short id and clearly describe a
+    // DUPLICATE, not just repeat validateGraph's generic (and, for this
+    // input, actively misleading) "cycle detected among 1 node(s)" message.
+    expect(secondPrompt).toContain('n1');
+    expect(secondPrompt.toLowerCase()).toMatch(/duplicate|share/);
+  });
+
+  it('(j) a structured output failing PlannerDraftSchema.parse consumes an attempt instead of aborting the run (T1 review round 3, M6)', async () => {
+    const model = new FakeChatModel([malformedRawDraft(), validRawDraft()]);
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+    });
+
+    const result = await planner.plan({ instruction: 'Echo some text, then shout it.' });
+
+    expect(result.attempts).toBe(2);
+    expect(result.unresolvedValidationErrors).toBeUndefined();
+    expect(result.draft.nodes).toHaveLength(2);
+    expect(model.calls).toHaveLength(2);
+    const secondPrompt = findHumanMessageText(model.calls[1]?.messages ?? []);
+    expect(secondPrompt).toContain('did not match the required schema');
+  });
+
+  it('(k) exhaustion on nothing but schema-parse failures surfaces a clear error, not a raw ZodError (T1 review round 3, M6)', async () => {
+    const model = new FakeChatModel([malformedRawDraft()]); // repeats — never parses
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      maxAttempts: 2,
+    });
+
+    await expect(
+      planner.plan({ instruction: 'Echo some text, then shout it.' })
+    ).rejects.not.toBeInstanceOf(z.ZodError);
+    expect(model.calls).toHaveLength(2);
+  });
 });
 
 describe('PipelinePlanner — constructor guards', () => {
@@ -293,6 +420,38 @@ describe('PipelinePlanner — constructor guards', () => {
           },
         })
     ).toThrow(/catalogLoader/);
+  });
+
+  // T1 review round 3, I1-R3: `maxAttempts` used to flow unvalidated straight
+  // into both loop-stop conditions (`correct.node.ts`'s `attempts >=
+  // maxAttempts` gate AND `recursionLimit: maxAttempts * 3 + 2`). A `NaN`
+  // (the realistic path — `Number(unset env var)`, and `??` does NOT default
+  // NaN) makes BOTH conditions permanently false/unreachable, so the planner
+  // calls the model forever. These two tests are deliberately BOUNDED:
+  // constructor-only, no `.plan()` call, no graph execution — a NaN test that
+  // actually ran the graph would hang the suite.
+  it('throws synchronously when maxAttempts is NaN (T1 review round 3, I1-R3)', () => {
+    expect(
+      () =>
+        new PipelinePlanner({
+          llmFactory: makeLlmFactory(new FakeChatModel([validRawDraft()])),
+          modelId: 'test-model',
+          specs: testSpecs,
+          maxAttempts: Number('not-a-number'),
+        })
+    ).toThrow(/maxAttempts must be an integer/);
+  });
+
+  it('throws synchronously when maxAttempts is 0 (T1 review round 3, I1-R3)', () => {
+    expect(
+      () =>
+        new PipelinePlanner({
+          llmFactory: makeLlmFactory(new FakeChatModel([validRawDraft()])),
+          modelId: 'test-model',
+          specs: testSpecs,
+          maxAttempts: 0,
+        })
+    ).toThrow(/maxAttempts must be an integer/);
   });
 });
 
