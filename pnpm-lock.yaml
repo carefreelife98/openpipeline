@@ -254,6 +254,25 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
 
+  packages/planner:
+    dependencies:
+      '@langchain/langgraph':
+        specifier: ^1.4.0
+        version: 1.4.4(@langchain/core@1.2.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
+      '@openpipeline/core':
+        specifier: workspace:*
+        version: link:../core
+      '@openpipeline/nodes':
+        specifier: workspace:*
+        version: link:../nodes
+    devDependencies:
+      '@langchain/core':
+        specifier: ^1.2.0
+        version: 1.2.0
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
   packages/react:
     dependencies:
       '@openpipeline/core':
