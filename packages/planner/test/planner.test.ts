@@ -4,12 +4,13 @@ import { describe, expect, it } from 'vitest';
 
 import { designNode } from '../src/nodes/design.node.js';
 import { PipelinePlanner } from '../src/planner.js';
+import { buildSpecCatalogText } from '../src/prompts.js';
 import type { PlannerRuntime } from '../src/runtime.js';
 import type { PlannerState } from '../src/state.js';
 import type { PlannerProgressEvent } from '../src/types.js';
 
 import { FakeChatModel, makeLlmFactory } from './helpers/fake-chat-model.js';
-import { echoSpec, shoutSpec, testSpecs } from './helpers/fixtures.js';
+import { echoSpec, shoutSpec, testSpecs, unconvertibleSpec } from './helpers/fixtures.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Unanchored counterpart of UUID_RE for "must not contain a UUID anywhere in
@@ -218,6 +219,54 @@ describe('PipelinePlanner.plan — no-MCP core loop', () => {
     expect(model.calls).toHaveLength(1);
     expect(model.calls[0]?.method).toBe('functionCalling');
   });
+
+  it('(g) maxAttempts above the LangGraph default recursion-limit budget still exhausts cleanly (T1 review round 2, I1)', async () => {
+    // 3 super-steps (design -> validate -> correct) per round; LangGraph's
+    // default recursionLimit of 25 caps out around maxAttempts=8 without an
+    // explicit override. maxAttempts=12 would previously reject with a raw
+    // GraphRecursionError after burning 9 real design calls instead of
+    // returning the documented exhaustion PlannerResult.
+    const model = new FakeChatModel([danglingEdgeRawDraft()]); // repeats — always invalid
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      maxAttempts: 12,
+    });
+
+    const result = await planner.plan({ instruction: 'Echo some text, then shout it.' });
+
+    expect(result.attempts).toBe(12);
+    expect(result.unresolvedValidationErrors).toBeDefined();
+    expect(result.unresolvedValidationErrors?.length ?? 0).toBeGreaterThan(0);
+    // All 12 design calls actually happened -- the loop was not silently
+    // truncated by an unstated internal recursion ceiling.
+    expect(model.calls).toHaveLength(12);
+  });
+
+  it('(h) plannerWarnings from a non-convertible spec appear exactly once across a multi-attempt run (T1 review round 2, I3)', async () => {
+    const model = new FakeChatModel([
+      danglingEdgeRawDraft(),
+      danglingEdgeRawDraft(),
+      validRawDraft(),
+    ]);
+    const specsWithUnconvertible = [...testSpecs, unconvertibleSpec];
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: specsWithUnconvertible,
+      maxAttempts: 3,
+    });
+
+    const result = await planner.plan({ instruction: 'Echo some text, then shout it.' });
+
+    // Three design attempts were made (two dangling-edge failures, then a
+    // valid draft), so a per-attempt-recomputed catalog would have produced
+    // three byte-identical warnings. Exactly one must survive.
+    expect(model.calls).toHaveLength(3);
+    expect(result.plannerWarnings).toHaveLength(1);
+    expect(result.plannerWarnings?.[0]).toContain('tool.unconvertible');
+  });
 });
 
 describe('PipelinePlanner — constructor guards', () => {
@@ -277,6 +326,7 @@ describe('design node — idMap stability across attempts (D4)', () => {
       modelId: 'test-model',
       temperature: 0.3,
       specs: testSpecs,
+      catalog: buildSpecCatalogText(testSpecs),
       logger: NOOP_LOGGER,
     };
 

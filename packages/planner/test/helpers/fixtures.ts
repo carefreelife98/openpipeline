@@ -82,4 +82,22 @@ export const consumerSpec: NodeSpec = {
   handler: () => Promise.resolve({ kind: 'tool.consume' as const }),
 };
 
+/**
+ * A spec whose `inputSchema` cannot be converted to JSON Schema by zod v4's
+ * `z.toJSONSchema` (`z.custom()` is one of the exotic types it refuses by
+ * default: "Custom types cannot be represented in JSON Schema"). Used to
+ * drive `buildSpecCatalogText`'s fail-soft warning path (D2/D7) through a
+ * full `plan()` run — see the I3 regression test in `planner.test.ts`.
+ */
+export const unconvertibleSpec: NodeSpec = {
+  key: 'tool.unconvertible',
+  nodeType: 'TOOL',
+  displayName: 'Unconvertible',
+  description: 'A spec whose input schema cannot be embedded in the design prompt.',
+  icon: 'alert-triangle',
+  inputSchema: z.custom<unknown>(() => true),
+  outputSchema: z.object({ kind: z.literal('tool.unconvertible') }),
+  handler: () => Promise.resolve({ kind: 'tool.unconvertible' as const }),
+};
+
 export const testSpecs: NodeSpec[] = [echoSpec, shoutSpec, branchSpec];

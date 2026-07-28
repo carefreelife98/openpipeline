@@ -11,7 +11,7 @@ import { checkAbort } from '../abort.js';
 import { applyAutoFill } from '../auto-fill.js';
 import { buildIdAssignment, type IdAssignment } from '../id-map.js';
 import { computeLayeredPositions } from '../layout.js';
-import { buildDesignPrompt, buildSpecCatalogText, DESIGN_SYSTEM_PROMPT } from '../prompts.js';
+import { buildDesignPrompt, DESIGN_SYSTEM_PROMPT } from '../prompts.js';
 import type { PlannerRuntime } from '../runtime.js';
 import { PlannerDraftSchema, type PlannerDraft, type PlannerDraftNode } from '../schema.js';
 import type { PlannerState } from '../state.js';
@@ -74,11 +74,10 @@ export async function designNode(
   });
 
   const specsByKey = new Map(runtime.specs.map((spec) => [spec.key, spec] as const));
-  const { text: catalogText, warnings: catalogWarnings } = buildSpecCatalogText(runtime.specs);
 
   const prompt = buildDesignPrompt({
     instruction: state.instruction,
-    catalogText,
+    catalogText: runtime.catalog.text,
     feedback: state.designFeedback,
   });
 
@@ -142,7 +141,16 @@ export async function designNode(
   return {
     draft,
     idMap: idAssignment.idMap,
-    plannerWarnings: catalogWarnings,
+    // No `plannerWarnings` key here (not even `[]`): the catalog's warnings
+    // are instruction-independent and identical on every attempt, so
+    // `PipelinePlanner.plan` seeds them into the APPEND-semantics
+    // `plannerWarnings` channel exactly once, via the graph's initial input,
+    // instead of this node re-emitting the same duplicate on every attempt
+    // (T1 review round 2, I3). Omitting the key (rather than passing `[]`)
+    // means the channel's reducer is never invoked here, so a future warning
+    // source added to `design` can append its own entries without needing to
+    // also thread the catalog's through.
+    //
     // Clear consumed feedback so a later successful attempt doesn't carry a
     // stale correction note around in state past the point it was acted on.
     designFeedback: undefined,

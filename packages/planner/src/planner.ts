@@ -5,6 +5,7 @@ import { checkAbort } from './abort.js';
 import { correctNode } from './nodes/correct.node.js';
 import { designNode } from './nodes/design.node.js';
 import { validateNode } from './nodes/validate.node.js';
+import { buildSpecCatalogText } from './prompts.js';
 import type { PlannerRuntime } from './runtime.js';
 import { PlannerStateAnnotation, type PlannerState } from './state.js';
 import type { PipelinePlannerOptions, PlanRequest, PlannerResult } from './types.js';
@@ -125,18 +126,41 @@ export class PipelinePlanner {
       );
     }
 
+    // Computed once per `plan()` call, not once per `design` attempt (T1
+    // review round 2, I3) — `specs` is fixed for the whole run, so both the
+    // `z.toJSONSchema` work and the resulting `catalogWarnings` are identical
+    // on every attempt. Seeded into the graph's initial input below instead
+    // of being re-returned by `design.node.ts` on every call, so the
+    // APPEND-semantics `plannerWarnings` channel (D7) receives each warning
+    // exactly once per run rather than once per attempt.
+    const catalog = buildSpecCatalogText(specs);
+
     const runtime: PlannerRuntime = {
       llmFactory: this.llmFactory,
       modelId: this.modelId,
       temperature: this.temperature,
       specs,
+      catalog,
       logger: this.logger,
       signal: request.signal,
       onProgress: request.onProgress,
     };
 
     const app = buildPlannerGraph(runtime, this.maxAttempts);
-    const rawOutput: unknown = await app.invoke({ instruction: request.instruction });
+    // Each design/correction round costs 3 LangGraph super-steps (design ->
+    // validate -> correct), so a run bounded by `maxAttempts` needs ~3 *
+    // maxAttempts super-steps in the worst case (always-invalid drafts,
+    // every round routes validate -> correct -> design again). LangGraph's
+    // default `recursionLimit` is 25, which silently caps out around
+    // `maxAttempts = 8` and throws an opaque `GraphRecursionError` instead of
+    // the documented exhaustion `PlannerResult` (T1 review round 2, I1) —
+    // derive an explicit limit from the already-known loop bound instead of
+    // trusting the library default. The `+ 2` covers START -> design and a
+    // final correct -> END super-step.
+    const rawOutput: unknown = await app.invoke(
+      { instruction: request.instruction, plannerWarnings: catalog.warnings },
+      { recursionLimit: this.maxAttempts * 3 + 2 }
+    );
     const finalState = readPlannerState(rawOutput);
 
     if (!finalState.draft) {

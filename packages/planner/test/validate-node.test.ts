@@ -118,6 +118,7 @@ describe('validateNode — unknown spec key (D2 draft->graph conversion)', () =>
       modelId: 'm',
       temperature: 0.3,
       specs: testSpecs,
+      catalog: { text: '', warnings: [] },
       logger: NOOP_LOGGER,
     };
     const state: PlannerState = {
@@ -149,6 +150,7 @@ describe('validateNode — unknown spec key (D2 draft->graph conversion)', () =>
       modelId: 'm',
       temperature: 0.3,
       specs: testSpecs,
+      catalog: { text: '', warnings: [] },
       logger: NOOP_LOGGER,
     };
     const state: PlannerState = {

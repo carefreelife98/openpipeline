@@ -1,5 +1,6 @@
 import type { LlmFactory, Logger, NodeSpec } from '@openpipeline/core';
 
+import type { SpecCatalogResult } from './prompts.js';
 import type { PlannerProgressEvent } from './types.js';
 
 /**
@@ -16,6 +17,20 @@ export interface PlannerRuntime {
   modelId: string;
   temperature: number;
   specs: readonly NodeSpec[];
+  /**
+   * `buildSpecCatalogText(specs)`'s result, computed exactly once per
+   * `plan()` call (in `PipelinePlanner.plan`, before the graph is invoked)
+   * rather than once per `design` node execution. `specs` (and therefore this
+   * catalog) is instruction-independent and identical on every attempt, so
+   * recomputing it per attempt was both wasted `z.toJSONSchema` work and —
+   * because `design.node.ts` used to return `catalog.warnings` into the
+   * APPEND-semantics `plannerWarnings` channel on every call — the source of
+   * one duplicate warning per attempt (T1 review round 2, I3). `design.node.ts`
+   * reads `catalog.text` for the prompt and no longer re-derives or re-emits
+   * `catalog.warnings` itself; `PipelinePlanner.plan` seeds them into the
+   * graph's initial input exactly once instead.
+   */
+  catalog: SpecCatalogResult;
   logger: Logger;
   signal?: AbortSignal;
   onProgress?: (event: PlannerProgressEvent) => void;
