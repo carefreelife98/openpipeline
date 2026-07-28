@@ -36,9 +36,10 @@ export default defineConfig({
         'packages/react/src/lib/**': { lines: 90, functions: 90, branches: 90 },
         'packages/react/src/store/**': { lines: 95, functions: 95, branches: 90 },
         'packages/react/src/canvas/**': { lines: 55, functions: 75, branches: 35 },
-        // Measured (packages/planner/src/** combined, including src/nodes/):
-        // lines 96.3%, functions 100%, branches 82.2% — floors set a few
-        // points below, same margin as the other packages above.
+        // Measured (packages/planner/src/** combined, including src/nodes/,
+        // after T1 review round 3's fix pass): lines 97.76%, functions 100%,
+        // branches 84.38% — floors set a few points below, same margin as the
+        // other packages above.
         'packages/planner/src/**': { lines: 93, functions: 95, branches: 78 },
       },
     },

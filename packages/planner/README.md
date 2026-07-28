@@ -27,6 +27,8 @@ console.log(result.draft, result.attempts, result.plannerWarnings);
 
 `plan()` runs a `design -> validate -> correct` LangGraph loop: the model proposes a draft using short ids (`n1`, `n2`, ...), the draft is validated against `@openpipeline/nodes`'s `validateGraph` plus the IF-branch rule, and failures are fed back to the model (with short ids, never the persisted UUIDs) for up to `maxAttempts` tries.
 
+> **No-MCP build:** this version only supports the static-specs path (`specs`). Passing `catalogLoader` or `mcpNodeResolver` — the MCP tool-selection (`intent -> select`) routing — throws synchronously from the constructor; that path isn't implemented yet (tracked for a follow-up task). Construct `PipelinePlanner` without those two options.
+
 See the [root README](https://github.com/carefreelife98/openpipeline#readme) for the full quickstart and the playground.
 
 ## License

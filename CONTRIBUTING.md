@@ -49,7 +49,7 @@ same locally.
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `pnpm lint`                     | ESLint 9, **strictTypeChecked** — type-aware, zero violations. No `eslint-disable`/`as any` to dodge; fix the root cause. |
 | `pnpm format:check`             | Prettier — formatting is owned by Prettier, not ESLint.                                                                   |
-| `pnpm build` / `pnpm typecheck` | 8/8 packages.                                                                                                             |
+| `pnpm build` / `pnpm typecheck` | 9/9 packages.                                                                                                             |
 | `pnpm test:ci`                  | Vitest + per-package coverage thresholds (a regression floor — don't lower it to pass).                                   |
 | example smokes                  | `quickstart`/`mcp`/`prisma`/`server` run to `SUCCESS`; `playground` builds.                                               |
 

@@ -3,10 +3,25 @@
 All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-All 8 `@openpipeline/*` packages (`core`, `nodes`, `runtime`, `mcp`,
+All 9 `@openpipeline/*` packages (`core`, `nodes`, `planner`, `runtime`, `mcp`,
 `store-memory`, `store-prisma`, `react`, `server`) are versioned in
 **lockstep** — one version number for the whole set, published together (see
 [RELEASING.md](./RELEASING.md)).
+
+## [Unreleased]
+
+### Added (`@openpipeline/planner`)
+
+- **New package.** Natural-language pipeline planner: an LLM-driven
+  `design -> validate -> correct` loop over LangGraph that turns an
+  instruction plus a `NodeSpec` catalog into a valid `@openpipeline/core`
+  `PipelineDraft` — short-id-based LLM output remapped to stable UUIDs across
+  correction rounds (survives a reused short id turning into the same
+  persisted id), deterministic auto-fill for generic-unknown-output MCP
+  specs, and a simple layered advisory layout (no `dagre` dependency). No-MCP
+  build: static `specs` only — `catalogLoader`/`mcpNodeResolver`-driven
+  `intent -> select` tool-selection routing throws synchronously from the
+  constructor and is not implemented yet (tracked follow-up).
 
 ## [0.4.0] - 2026-07-28
 
