@@ -48,8 +48,21 @@ function buildPlannerGraph(runtime: PlannerRuntime, maxAttempts: number) {
   const correct = (state: PlannerState) => correctNode(state, runtime, maxAttempts);
   const routeAfterValidate = (state: PlannerState) =>
     state.validationIssues.length === 0 ? 'end' : 'correct';
+  // Trusts `correctNode`'s own continue/stop decision instead of
+  // re-deriving it from `state.attempts` here. Conditional-edge routers only
+  // ever observe state *after* the preceding node's update has been merged,
+  // so re-checking `attempts >= maxAttempts` on the post-update value would
+  // go stale on the very last permitted round: correctNode gates on the
+  // OLD (pre-increment) `attempts` (see its doc comment / T1 review I3), so
+  // the round where `attempts` becomes exactly `maxAttempts` is precisely
+  // the round it just decided TO continue on — re-checking `>=` here would
+  // wrongly end the run one `design` call early, right back into the same
+  // off-by-one this was fixing. `designFeedback` is a reliable proxy instead:
+  // `correctNode` sets it if and only if it decided to continue, and
+  // `designNode` unconditionally clears it back to `undefined` on every run,
+  // so it can never be stale here.
   const routeAfterCorrect = (state: PlannerState) =>
-    state.attempts >= maxAttempts ? 'end' : 'design';
+    state.designFeedback !== undefined ? 'design' : 'end';
 
   return new StateGraph(PlannerStateAnnotation)
     .addNode('design', design as never)

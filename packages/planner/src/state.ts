@@ -17,6 +17,18 @@ export interface PlannerState {
    * Attempt counter. Starts at 1 (the first `design` call IS attempt 1) and is
    * incremented only by the `correct` node (D2: "correct: attempts++"). A
    * successful plan with zero corrections reports `attempts === 1`.
+   *
+   * Always equals the number of `design` calls actually made, whether the
+   * run ends by validating cleanly or by exhausting `maxAttempts` — see
+   * `correct.node.ts`'s doc comment (T1 review I3) for why the gate against
+   * `maxAttempts` runs BEFORE this increment rather than after: checking
+   * post-increment (`attempts++` then `attempts >= maxAttempts`) makes the
+   * happy-path and exhaustion-path meanings of this field diverge (design-call
+   * count vs. design-call-count-plus-one) and silently caps the loop at
+   * `maxAttempts - 1` actual `design` calls. With the pre-increment gate,
+   * `maxAttempts` design calls are made in total, so `maxAttempts: 1` means
+   * "no corrections" and `maxAttempts: 2` means "one correction round" (never
+   * a dead setting identical to `maxAttempts: 1`).
    */
   attempts: number;
   /**

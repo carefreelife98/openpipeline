@@ -126,9 +126,47 @@ describe('PipelinePlanner.plan — no-MCP core loop', () => {
     expect(result.unresolvedValidationErrors?.length ?? 0).toBeGreaterThan(0);
     expect(result.draft).toBeDefined();
     expect(result.draft.nodes).toHaveLength(2);
-    // Two design calls were actually made (attempts 1 and 2); the third
-    // increment (to 3) is what trips the `>= maxAttempts` exhaustion check.
+    // maxAttempts=3 design calls are actually made (T1 review I3: the
+    // `correct` node gates on `maxAttempts` BEFORE incrementing `attempts`,
+    // so `attempts` and "design calls made" never diverge, and exhaustion
+    // never costs a `design` call the way a post-increment gate would).
+    expect(model.calls).toHaveLength(3);
+  });
+
+  it('(c2) maxAttempts=2 performs one correction round (T1 review I3: previously a dead setting identical to maxAttempts=1)', async () => {
+    const model = new FakeChatModel([danglingEdgeRawDraft(), danglingEdgeRawDraft()]); // repeats — always invalid
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      maxAttempts: 2,
+    });
+
+    const result = await planner.plan({ instruction: 'Echo some text, then shout it.' });
+
+    expect(result.attempts).toBe(2);
+    expect(result.unresolvedValidationErrors).toBeDefined();
+    // Two design calls, not one: maxAttempts=2 must actually spend its one
+    // correction round, proving it is behaviorally distinct from
+    // maxAttempts=1 rather than the pre-fix off-by-one collapsing both to a
+    // single design call.
     expect(model.calls).toHaveLength(2);
+  });
+
+  it('(c1) maxAttempts=1 performs zero correction rounds (a single design call, no feedback sent)', async () => {
+    const model = new FakeChatModel([danglingEdgeRawDraft()]); // never consulted a second time
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      maxAttempts: 1,
+    });
+
+    const result = await planner.plan({ instruction: 'Echo some text, then shout it.' });
+
+    expect(result.attempts).toBe(1);
+    expect(result.unresolvedValidationErrors).toBeDefined();
+    expect(model.calls).toHaveLength(1);
   });
 
   it('(e) an abort signal fired between nodes rejects with PipelineAbortedError', async () => {
