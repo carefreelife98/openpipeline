@@ -1,4 +1,5 @@
 import type { CostBundle, PipelineDraft, RunCreate, RunStepStatus } from '@openpipeline/core';
+import { PipelineNotFoundError } from '@openpipeline/core';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import { MemoryStore } from '../src/index.js';
@@ -143,7 +144,7 @@ describe('MemoryStore.save monotonic updatedAt (S3)', () => {
 });
 
 describe('MemoryStore.load', () => {
-  it('throws a descriptive error for an unknown pipeline', async () => {
+  it('throws a typed PipelineNotFoundError for an unknown pipeline', async () => {
     // NOTE: load() has a Promise return type but throws synchronously rather
     // than returning a rejected promise. From a caller's view (`await load(...)`)
     // both surface identically, so we assert via an async wrapper that mirrors
@@ -151,6 +152,19 @@ describe('MemoryStore.load', () => {
     await expect(async () => store.load('does-not-exist')).rejects.toThrow(
       'Pipeline not found: does-not-exist'
     );
+  });
+
+  it('throws an error that is instanceof PipelineNotFoundError and carries the pipelineId', async () => {
+    let caught: unknown;
+    try {
+      await store.load('does-not-exist');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PipelineNotFoundError);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as PipelineNotFoundError).pipelineId).toBe('does-not-exist');
+    expect((caught as PipelineNotFoundError).name).toBe('PipelineNotFoundError');
   });
 
   it('returns empty node/edge arrays for a pipeline saved with none', async () => {

@@ -1,5 +1,5 @@
 import type { CostBundle, PipelineDraft, RunDeliveryMode, StepFinish } from '@openpipeline/core';
-import { ZERO_COST } from '@openpipeline/core';
+import { PipelineNotFoundError, ZERO_COST } from '@openpipeline/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PrismaPipelineStore } from '../src/index.js';
@@ -722,11 +722,50 @@ describe('PrismaPipelineStore.load', () => {
     expect(loaded.nodes[0]?.inputs).toEqual({});
   });
 
-  it('throws a descriptive error when the pipeline does not exist', async () => {
+  it('throws a typed PipelineNotFoundError when the pipeline does not exist', async () => {
     const fake = createFakePrisma();
     const store = new PrismaPipelineStore(fake.client);
 
     await expect(store.load('missing-id')).rejects.toThrow(/Pipeline not found: missing-id/);
+  });
+
+  it('the thrown error is instanceof PipelineNotFoundError and carries the pipelineId', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+
+    let caught: unknown;
+    try {
+      await store.load('missing-id');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PipelineNotFoundError);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as PipelineNotFoundError).pipelineId).toBe('missing-id');
+    expect((caught as PipelineNotFoundError).name).toBe('PipelineNotFoundError');
+  });
+});
+
+describe('PrismaPipelineStore.load — infra failure characterization (must NOT become PipelineNotFoundError)', () => {
+  // The whole point of a typed PipelineNotFoundError is that a consumer can
+  // safely classify ONLY that error as 404 — a DB outage or any other
+  // infrastructure failure reaching this same call site must propagate
+  // unchanged, never get reclassified as "pipeline does not exist".
+  it('propagates a connection failure from the underlying client unchanged', async () => {
+    const fake = createFakePrisma();
+    const infraError = new Error('ECONNREFUSED: connection refused');
+    fake.client.pipeline.findUnique = () => Promise.reject(infraError);
+    const store = new PrismaPipelineStore(fake.client);
+
+    let caught: unknown;
+    try {
+      await store.load('any-id');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBe(infraError);
+    expect(caught).not.toBeInstanceOf(PipelineNotFoundError);
+    expect((caught as Error).message).toBe('ECONNREFUSED: connection refused');
   });
 });
 
