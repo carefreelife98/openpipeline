@@ -181,9 +181,10 @@ jobs:
           # Leaf-first order: every package is published only after all of
           # its @openpipeline/* internal deps are already on the registry.
           #   nodes, mcp, store-memory, store-prisma, react -> depend on core
+          #   planner                                        -> depends on core, nodes
           #   runtime                                        -> depends on core, nodes
           #   server                                          -> depends on core, runtime
-          ORDER=(core nodes mcp store-memory store-prisma react runtime server)
+          ORDER=(core nodes planner mcp store-memory store-prisma react runtime server)
 
           # Guard against ORDER silently drifting out of sync with what was
           # actually packed (e.g. a new packages/<name> added without
