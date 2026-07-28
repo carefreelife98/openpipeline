@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import type { PipelineDraft, RunContext } from '@openpipeline/core';
+import { PipelineNotFoundError, type PipelineDraft, type RunContext } from '@openpipeline/core';
 
 import type { PipelineHandlers } from './handlers.js';
 import { sseFrame, SSE_HEADERS } from './sse.js';
@@ -13,16 +13,25 @@ import { sseFrame, SSE_HEADERS } from './sse.js';
  *
  * Routes (all under `basePath`, default `/pipeline`):
  *   POST   /pipeline                    -> save     { ...PipelineDraft }  => { pipelineId }
- *   GET    /pipeline/:id                -> load
+ *   GET    /pipeline/:id                -> load. 404 (`{ error }`) if the pipeline
+ *                                           does not exist (`PipelineNotFoundError`);
+ *                                           any other failure (e.g. a DB outage) still
+ *                                           500s, unclassified — never conflated with
+ *                                           "not found".
  *   GET    /pipeline/:id/runs           -> list runs
- *   POST   /pipeline/run                -> run (non-streaming)  { pipelineId }
+ *   POST   /pipeline/run                -> run (non-streaming)  { pipelineId }. 404 for
+ *                                           a nonexistent pipeline (`PipelineNotFoundError`,
+ *                                           thrown by `store.load` before the run row is
+ *                                           created — see runtime's `run()`); any other
+ *                                           failure still 500s.
  *   POST   /pipeline/run/stream         -> start a run and stream its live events
  *                                           (SSE)  { pipelineId, context? } — this is
  *                                           the route that actually starts a run;
  *                                           the GET stream route below no longer does.
- *                                           400 (headers unsent) for a missing/
- *                                           non-string `pipelineId`, or one that
- *                                           doesn't resolve to an existing pipeline —
+ *                                           404 (headers unsent) for a nonexistent
+ *                                           pipeline (`PipelineNotFoundError`); 400
+ *                                           (headers unsent) for a missing/non-string
+ *                                           `pipelineId` or any other startRun failure —
  *                                           both validated/started BEFORE
  *                                           `res.writeHead` (#8).
  *   GET    /pipeline/runs/:runId/stream -> attach to an already IN-FLIGHT run's SSE
@@ -66,9 +75,23 @@ export function createNodeHttpHandler(
     }
 
     // POST /pipeline/run  (run, non-streaming)
+    // A PipelineNotFoundError from engine.run() (store.load runs before
+    // createRun — see runtime/src/index.ts) 404s; any other error (e.g. an
+    // infra failure) falls through to the top-level catch's generic 500 —
+    // unchanged from before PipelineNotFoundError existed.
     if (method === 'POST' && rest === '/run') {
       const body = (await readJson(req)) as { pipelineId: string };
-      json(res, 200, await handlers.runPipeline({ pipelineId: body.pipelineId }));
+      let result: Awaited<ReturnType<typeof handlers.runPipeline>>;
+      try {
+        result = await handlers.runPipeline({ pipelineId: body.pipelineId });
+      } catch (err) {
+        if (err instanceof PipelineNotFoundError) {
+          json(res, 404, { error: err.message });
+          return;
+        }
+        throw err;
+      }
+      json(res, 200, result);
       return;
     }
 
@@ -98,6 +121,14 @@ export function createNodeHttpHandler(
           context: body.context,
         }));
       } catch (err) {
+        // A PipelineNotFoundError (store.load runs before createRun inside
+        // engine.run — see runtime/src/index.ts) 404s; any other startRun
+        // failure (validation, MCP catalog, infra) keeps the pre-existing
+        // headers-unsent 400 behavior.
+        if (err instanceof PipelineNotFoundError) {
+          json(res, 404, { error: err.message });
+          return;
+        }
         json(res, 400, { error: err instanceof Error ? err.message : String(err) });
         return;
       }
@@ -210,11 +241,24 @@ export function createNodeHttpHandler(
     }
 
     // GET /pipeline/:id
+    // A PipelineNotFoundError from engine.load() 404s; any other error (e.g.
+    // an infra failure) falls through to the top-level catch's generic 500 —
+    // unchanged from before PipelineNotFoundError existed.
     const getMatch = rest.match(/^\/([^/]+)$/);
     if (method === 'GET' && getMatch) {
       const [, pipelineId] = getMatch;
       if (pipelineId !== undefined) {
-        json(res, 200, await handlers.getPipeline(pipelineId));
+        let graph: unknown;
+        try {
+          graph = await handlers.getPipeline(pipelineId);
+        } catch (err) {
+          if (err instanceof PipelineNotFoundError) {
+            json(res, 404, { error: err.message });
+            return;
+          }
+          throw err;
+        }
+        json(res, 200, graph);
         return;
       }
     }
