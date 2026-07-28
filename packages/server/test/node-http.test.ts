@@ -264,6 +264,36 @@ describe('createNodeHttpHandler routing', () => {
     expect(engine.runCalls).toEqual([{ pipelineId: 'p1' }]);
   });
 
+  it('POST /pipeline/run 400s (not 404) for a missing pipelineId — never calls engine.run (store.load never reached)', async () => {
+    const { base, engine } = ctx();
+
+    const res = await fetch(`${base}/pipeline/run`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'pipelineId is required and must be a non-empty string',
+    });
+    expect(engine.runCalls).toHaveLength(0);
+  });
+
+  it('POST /pipeline/run 400s for a non-string pipelineId — never calls engine.run', async () => {
+    const { base, engine } = ctx();
+
+    const res = await fetch(`${base}/pipeline/run`, {
+      method: 'POST',
+      body: JSON.stringify({ pipelineId: 42 }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'pipelineId is required and must be a non-empty string',
+    });
+    expect(engine.runCalls).toHaveLength(0);
+  });
+
   it('POST /pipeline/run/:runId/abort 404s for an unknown/not-in-flight run (#S11d)', async () => {
     const { base, engine } = ctx();
 

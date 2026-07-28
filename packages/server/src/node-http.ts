@@ -19,7 +19,9 @@ import { sseFrame, SSE_HEADERS } from './sse.js';
  *                                           500s, unclassified — never conflated with
  *                                           "not found".
  *   GET    /pipeline/:id/runs           -> list runs
- *   POST   /pipeline/run                -> run (non-streaming)  { pipelineId }. 404 for
+ *   POST   /pipeline/run                -> run (non-streaming)  { pipelineId }. 400 for
+ *                                           a missing/non-string `pipelineId`, validated
+ *                                           before the engine is touched; 404 for
  *                                           a nonexistent pipeline (`PipelineNotFoundError`,
  *                                           thrown by `store.load` before the run row is
  *                                           created — see runtime's `run()`); any other
@@ -75,12 +77,20 @@ export function createNodeHttpHandler(
     }
 
     // POST /pipeline/run  (run, non-streaming)
+    // `pipelineId` is validated the same way `/run/stream` validates it —
+    // BEFORE the engine is ever touched — so a missing/non-string field 400s
+    // instead of reaching `store.load` with `undefined` and coming back as a
+    // misleading 404 `Pipeline not found: undefined`.
     // A PipelineNotFoundError from engine.run() (store.load runs before
     // createRun — see runtime/src/index.ts) 404s; any other error (e.g. an
     // infra failure) falls through to the top-level catch's generic 500 —
     // unchanged from before PipelineNotFoundError existed.
     if (method === 'POST' && rest === '/run') {
-      const body = (await readJson(req)) as { pipelineId: string };
+      const body = (await readJson(req)) as { pipelineId?: unknown };
+      if (typeof body.pipelineId !== 'string' || body.pipelineId.length === 0) {
+        json(res, 400, { error: 'pipelineId is required and must be a non-empty string' });
+        return;
+      }
       let result: Awaited<ReturnType<typeof handlers.runPipeline>>;
       try {
         result = await handlers.runPipeline({ pipelineId: body.pipelineId });
