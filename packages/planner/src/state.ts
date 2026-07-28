@@ -47,6 +47,19 @@ export interface PlannerState {
   plannerWarnings: string[];
   /** Human-readable, short-id-rewritten feedback for the next `design` call. */
   designFeedback?: string;
+  /**
+   * Set (to a short diagnostic string) by `design` when the LLM's structured
+   * output failed `PlannerDraftSchema.parse` on THIS attempt — a schema-shape
+   * defect, not a graph-structure one, so `validate` has nothing to check (no
+   * `PlannerDraft` was ever produced) and is skipped entirely for this round
+   * (T1 review round 3, M6: previously this rejected `plan()` outright with a
+   * raw `ZodError`, unrecoverable, unlike every graph-level defect which gets
+   * `maxAttempts` tries). `buildPlannerGraph`'s `routeAfterDesign` reads this
+   * to route straight to `correct`. Unconditionally cleared back to
+   * `undefined` by `design` on every run (success or failure) so it can never
+   * go stale — mirrors `designFeedback`'s own clearing discipline.
+   */
+  designError?: string;
 }
 
 const plannerStateSpec: StateDefinition = {
@@ -84,6 +97,11 @@ const plannerStateSpec: StateDefinition = {
   }),
 
   designFeedback: Annotation<string | undefined>({
+    reducer: (_existing: string | undefined, update: string | undefined) => update,
+    default: (): string | undefined => undefined,
+  }),
+
+  designError: Annotation<string | undefined>({
     reducer: (_existing: string | undefined, update: string | undefined) => update,
     default: (): string | undefined => undefined,
   }),

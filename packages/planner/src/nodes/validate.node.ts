@@ -70,20 +70,22 @@ export function validateIfBranches(
 }
 
 /**
- * D2's validate node: draft -> `PipelineWithGraph` conversion, plus two
+ * D2's validate node: draft -> `PipelineWithGraph` conversion, plus three
  * planner-specific structural checks that a well-formed compiled pipeline
  * would never need (an LLM-authored draft can reference a node key that
- * doesn't exist, or an edge endpoint that names no declared node — neither is
- * possible via the normal graph-builder UI, so `validateGraph` itself has no
- * check for them), then `@openpipeline/nodes`'s `validateGraph` and the
- * IF-branch rule above.
+ * doesn't exist, an edge endpoint that names no declared node, or reuse the
+ * same short id for two different nodes — none of these is possible via the
+ * normal graph-builder UI, so `validateGraph` itself has no check for them),
+ * then `@openpipeline/nodes`'s `validateGraph` and the IF-branch rule above.
  *
- * Both structural checks reuse existing `GraphValidationIssue.code` values
- * for the same reason `validateIfBranches` does (closed union, package out of
- * scope): an unresolved node key reuses `NODE_TYPE_MISMATCH` ("this node's
- * type/kind cannot be determined"); a dangling edge endpoint reuses
+ * All three structural checks reuse existing `GraphValidationIssue.code`
+ * values for the same reason `validateIfBranches` does (closed union, package
+ * out of scope): an unresolved node key reuses `NODE_TYPE_MISMATCH` ("this
+ * node's type/kind cannot be determined"); a dangling edge endpoint reuses
  * `REF_SOURCE_MISSING` ("a reference points at something that doesn't
- * exist") — both messages spell out plainly what actually went wrong so the
+ * exist"); a duplicate node id also reuses `NODE_TYPE_MISMATCH` ("this
+ * persisted id no longer uniquely identifies one node" — T1 review round 3,
+ * M5) — every message spells out plainly what actually went wrong so the
  * reused code never obscures the real defect in the design feedback.
  */
 export function validateNode(
@@ -91,6 +93,7 @@ export function validateNode(
   runtime: PlannerRuntime
 ): Promise<Partial<PlannerState>> {
   checkAbort(runtime.signal);
+  runtime.logger.debug(`[PipelinePlanner] validate attempt=${String(state.attempts)}`);
   runtime.onProgress?.({ phase: 'validate', attempt: state.attempts });
 
   const draft = state.draft;
@@ -106,6 +109,41 @@ export function validateNode(
   const nodeIds = new Set(draft.nodes.map((n) => n.id));
 
   const issues: GraphValidationIssue[] = [];
+
+  // Duplicate short ids from the LLM (two authored nodes both "n1") collapse
+  // onto the SAME persisted id here: `buildIdAssignment.resolve()`
+  // deliberately returns the same UUID for a repeated short id — that's what
+  // keeps a *correction round's* reused id stable across attempts (D4). When
+  // the collapse instead happens *within a single draft* (an authoring
+  // mistake, not a correction-round reuse), `validateGraph`'s own topology
+  // check sees one node id appearing twice in `draft.nodes` and reports a
+  // misleading `TOPOLOGY_CYCLE` ("cycle detected among 1 node(s)") that gives
+  // the model no actionable signal about what actually went wrong (T1 review
+  // round 3, M5). Detected here structurally, for the same reason the
+  // unknown-key and dangling-edge checks are: `validateGraph` has no
+  // dedicated check for it. Reuses `NODE_TYPE_MISMATCH` (closest fit: this
+  // persisted id no longer uniquely identifies one authored node) — same
+  // closed-union rationale as the other reused codes in this file. Left in
+  // the issue list ALONGSIDE whatever `validateGraph` itself reports below
+  // (redundant, but never wrong) rather than skipped, matching how the
+  // unknown-key/dangling-edge checks above don't suppress `validateGraph`
+  // either.
+  const idOccurrences = new Map<string, number>();
+  for (const node of draft.nodes) {
+    idOccurrences.set(node.id, (idOccurrences.get(node.id) ?? 0) + 1);
+  }
+  for (const [id, count] of idOccurrences) {
+    if (count > 1) {
+      issues.push({
+        code: 'NODE_TYPE_MISMATCH',
+        nodeId: id,
+        message:
+          `${String(count)} nodes in this draft share id "${id}" — two or more of your nodes ` +
+          `were given the same short id; every node's short id must be unique within one draft`,
+      });
+    }
+  }
+
   const specsByNodeId = new Map<string, NodeSpec>();
   for (const node of draft.nodes) {
     const spec = specsByKey.get(node.key);

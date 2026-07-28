@@ -6,6 +6,7 @@ import type {
   PipelineEdgeRow,
   PipelineNodeRow,
 } from '@openpipeline/core';
+import { z } from 'zod';
 
 import { checkAbort } from '../abort.js';
 import { applyAutoFill } from '../auto-fill.js';
@@ -18,6 +19,8 @@ import type { PlannerState } from '../state.js';
 import { asStructuredOutputModel } from '../structured-output.js';
 
 const MAX_NAME_LENGTH = 80;
+/** How many of a ZodError's issues to quote back to the model — enough to be actionable, not a full dump. */
+const MAX_SCHEMA_ISSUES = 3;
 
 function derivePipelineName(instruction: string): string {
   const trimmed = instruction.trim().replace(/\s+/g, ' ');
@@ -55,18 +58,43 @@ function remapInputs(inputs: PlannerDraftNode['inputs'], idAssignment: IdAssignm
 }
 
 /**
+ * Renders the first few issues of a `PlannerDraftSchema.parse` failure into a
+ * short, model-readable summary (T1 review round 3, M6). Capped at
+ * {@link MAX_SCHEMA_ISSUES} — enough to be actionable without dumping the
+ * entire ZodError tree into the next design prompt.
+ */
+function describeSchemaFailure(err: z.ZodError): string {
+  const summary = err.issues
+    .slice(0, MAX_SCHEMA_ISSUES)
+    .map((issue) => `${issue.path.length > 0 ? issue.path.join('.') : '(root)'}: ${issue.message}`)
+    .join('; ');
+  return `your previous response did not match the required schema: ${summary}`;
+}
+
+/**
  * D2's design node: resolve specs, build the catalog-embedding prompt
  * (feeding back the previous attempt's short-id-rewritten errors when this is
  * a correction round), get a structured `PlannerDraft` from the LLM (D3),
  * remap its short ids to stable UUIDs (D4), apply deterministic auto-fill
  * (D5), compute advisory layered positions (D6), and produce the
  * `@openpipeline/core` `PipelineDraft` the rest of the loop validates.
+ *
+ * If the model's structured output fails `PlannerDraftSchema.parse` (a
+ * schema-SHAPE defect — the adapter handed back something that only loosely
+ * matches), this no longer aborts `plan()` with a raw `ZodError` (T1 review
+ * round 3, M6): it's caught here and converted into `state.designError` +
+ * `state.validationIssues`, which routes straight to `correct` (skipping
+ * `validate` — there is no `PlannerDraft` to build a graph from) and consumes
+ * an attempt exactly like a graph-level defect does. Only exhausting every
+ * attempt on nothing but parse failures still surfaces as an error — see
+ * `planner.ts`'s `readPlannerState`/`draft` check.
  */
 export async function designNode(
   state: PlannerState,
   runtime: PlannerRuntime
 ): Promise<Partial<PlannerState>> {
   checkAbort(runtime.signal);
+  runtime.logger.debug(`[PipelinePlanner] design attempt=${String(state.attempts)}`);
   runtime.onProgress?.({
     phase: 'design',
     attempt: state.attempts,
@@ -91,10 +119,22 @@ export async function designNode(
 
   const messages = [new SystemMessage(DESIGN_SYSTEM_PROMPT), new HumanMessage(prompt)];
   const rawOutput = await structuredModel.invoke(messages);
-  // Defensive re-validation: a structured-output adapter (real or fake) can
-  // still hand back a shape that only loosely matches — surface a loud ZodError
-  // rather than silently trusting `rawOutput`.
-  const plannerDraft: PlannerDraft = PlannerDraftSchema.parse(rawOutput);
+
+  let plannerDraft: PlannerDraft;
+  try {
+    // Defensive re-validation: a structured-output adapter (real or fake) can
+    // still hand back a shape that only loosely matches — surface a loud
+    // ZodError rather than silently trusting `rawOutput`.
+    plannerDraft = PlannerDraftSchema.parse(rawOutput);
+  } catch (err) {
+    if (!(err instanceof z.ZodError)) throw err;
+    const message = describeSchemaFailure(err);
+    return {
+      designError: message,
+      validationIssues: [{ code: 'NODE_TYPE_MISMATCH', message }],
+      designFeedback: undefined,
+    };
+  }
 
   const idAssignment = buildIdAssignment(plannerDraft, state.idMap);
 
@@ -154,5 +194,9 @@ export async function designNode(
     // Clear consumed feedback so a later successful attempt doesn't carry a
     // stale correction note around in state past the point it was acted on.
     designFeedback: undefined,
+    // Clear a previous attempt's schema-parse failure (T1 review round 3,
+    // M6): this attempt DID parse, so `routeAfterDesign` must route to
+    // `validate`, not stale-route back to `correct`.
+    designError: undefined,
   };
 }
