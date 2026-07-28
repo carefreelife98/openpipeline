@@ -1,6 +1,6 @@
 {
   "name": "@openpipeline/core",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Framework-agnostic execution kernel and interface contracts for OpenPipeline.",
   "license": "MIT",
   "author": "carefreelife98",

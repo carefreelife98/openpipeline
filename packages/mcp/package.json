@@ -1,6 +1,6 @@
 {
   "name": "@openpipeline/mcp",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Optional MCP integration for OpenPipeline: JSON-Schema→Zod converter, MCP client factory, env catalog loader, and mcp:* node resolver.",
   "license": "MIT",
   "author": "carefreelife98",

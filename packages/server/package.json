@@ -1,6 +1,6 @@
 {
   "name": "@openpipeline/server",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Transport-agnostic HTTP + SSE handlers for OpenPipeline, with a tiny Node http adapter.",
   "license": "MIT",
   "author": "carefreelife98",
