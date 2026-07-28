@@ -12,6 +12,14 @@ import { FakeChatModel, makeLlmFactory } from './helpers/fake-chat-model.js';
 import { echoSpec, shoutSpec, testSpecs } from './helpers/fixtures.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Unanchored counterpart of UUID_RE for "must not contain a UUID anywhere in
+// this (possibly multi-line) string" assertions. UUID_RE is anchored
+// (`^...$`, no `/m`), so `.not.toMatch(UUID_RE)` against a multi-line prompt
+// is vacuously true regardless of content — it only ever matches a string
+// that IS, in its entirety, a bare UUID (T1 review I2). Use this one for the
+// negative/"must not leak" direction; keep UUID_RE for exact-value equality
+// checks like `expect(node.id).toMatch(UUID_RE)`.
+const UUID_ANYWHERE_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 /** A valid 2-node draft: n1 (echo, literal input) -> n2 (shout, reads n1's output). */
 function validRawDraft(): unknown {
@@ -96,9 +104,10 @@ describe('PipelinePlanner.plan — no-MCP core loop', () => {
     expect(model.calls).toHaveLength(2);
     const secondPrompt = findHumanMessageText(model.calls[1]?.messages ?? []);
     // The dangling edge's target ("n3") is referenced by its SHORT id in the
-    // feedback the model sees — never by the internal persisted UUID (D4).
+    // feedback the model sees — never by the internal persisted UUID (D4),
+    // and never by the edge's own internal id either (T1 review I1).
     expect(secondPrompt).toContain('n3');
-    expect(secondPrompt).not.toMatch(UUID_RE);
+    expect(secondPrompt).not.toMatch(UUID_ANYWHERE_RE);
   });
 
   it('(c) maxAttempts exhaustion: always-invalid responses end with unresolvedValidationErrors and the last draft', async () => {

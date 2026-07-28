@@ -121,18 +121,26 @@ export function validateNode(
   }
 
   for (const edge of draft.edges) {
+    // Identify the edge by its endpoints, never by `edge.id`: that id is a
+    // fresh `crypto.randomUUID()` minted in design.node.ts that is never
+    // registered in `idMap` (only node/edge *endpoint* short ids are), so
+    // `buildDesignFeedback` has no reverse mapping for it and it would leak
+    // into the design prompt as a raw, LLM-meaningless UUID (D4; T1 review
+    // I1). `fromNodeId`/`toNodeId` are themselves always idMap-resolved
+    // (including for a dangling endpoint — see `buildIdAssignment`), so they
+    // rewrite back to their short ids exactly like any other node reference.
     if (!nodeIds.has(edge.fromNodeId)) {
       issues.push({
         code: 'REF_SOURCE_MISSING',
         nodeId: edge.fromNodeId,
-        message: `edge (${edge.id}) references unknown source node "${edge.fromNodeId}" — no node with that id exists in this draft`,
+        message: `edge ${edge.fromNodeId} -> ${edge.toNodeId} references unknown source node "${edge.fromNodeId}" — no node with that id exists in this draft`,
       });
     }
     if (!nodeIds.has(edge.toNodeId)) {
       issues.push({
         code: 'REF_SOURCE_MISSING',
         nodeId: edge.toNodeId,
-        message: `edge (${edge.id}) references unknown target node "${edge.toNodeId}" — no node with that id exists in this draft`,
+        message: `edge ${edge.fromNodeId} -> ${edge.toNodeId} references unknown target node "${edge.toNodeId}" — no node with that id exists in this draft`,
       });
     }
   }
