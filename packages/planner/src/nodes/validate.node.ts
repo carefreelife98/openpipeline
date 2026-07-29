@@ -2,6 +2,7 @@ import type { NodeSpec, PipelineWithGraph } from '@openpipeline/core';
 import { validateGraph, type GraphValidationIssue } from '@openpipeline/nodes';
 
 import { checkAbort } from '../abort.js';
+import { mergeSpecs } from '../mcp-routing.js';
 import type { PlannerRuntime } from '../runtime.js';
 import type { PlannerState } from '../state.js';
 
@@ -105,7 +106,14 @@ export function validateNode(
     throw new Error('[PipelinePlanner] validate node reached with no draft in state');
   }
 
-  const specsByKey = new Map(runtime.specs.map((spec) => [spec.key, spec] as const));
+  // T2: mirrors `design.node.ts`'s own `mergeSpecs(runtime.specs,
+  // state.mcpSpecs)` — a node whose key `select` resolved this round (D2)
+  // must be recognized here too, or EVERY MCP-resolved node would always
+  // fail as an "unknown node key" the instant it reached `validate`, even
+  // though `design` itself resolved it correctly just one step earlier.
+  const specsByKey = new Map(
+    mergeSpecs(runtime.specs, state.mcpSpecs).map((spec) => [spec.key, spec] as const)
+  );
   const nodeIds = new Set(draft.nodes.map((n) => n.id));
 
   const issues: GraphValidationIssue[] = [];

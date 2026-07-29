@@ -1,6 +1,6 @@
 import { Annotation } from '@langchain/langgraph';
 import type { AnnotationRoot, StateDefinition } from '@langchain/langgraph';
-import type { PipelineDraft } from '@openpipeline/core';
+import type { NodeSpec, PipelineDraft } from '@openpipeline/core';
 import type { GraphValidationIssue } from '@openpipeline/nodes';
 
 /**
@@ -60,6 +60,45 @@ export interface PlannerState {
    * go stale — mirrors `designFeedback`'s own clearing discipline.
    */
   designError?: string;
+
+  // ── T2: MCP-catalog path (intent -> select) — only populated when the
+  // planner is constructed with `catalogLoader`/`mcpNodeResolver` (D2). Every
+  // field below stays `undefined`/empty on the no-MCP path; nothing here
+  // changes the no-catalog graph's behavior.
+
+  /** `intent`'s one-line summary of what the instruction is asking for. */
+  taskSummary?: string;
+  /** `intent`'s decision: does fulfilling this instruction need an MCP tool? `false` skips `select` entirely. */
+  needsMcp?: boolean;
+  /** `intent`'s hint of which MCP provider keys are likely relevant — informational, not enforced by `select`. */
+  candidateProviderKeys?: string[];
+  /** `select`'s final `mcp:<provider>:<tool>` keys that were both chosen by the model AND present in the loaded catalog. */
+  selectedMcpKeys?: string[];
+  /**
+   * `NodeSpec`s synthesized by `mcpNodeResolver.resolveSpec` for each of
+   * {@link selectedMcpKeys} that resolved successfully (fail-soft per key —
+   * D2). Merged with `runtime.specs` by `design`/`validate` so the design
+   * catalog and graph validation both recognize the selected MCP tools.
+   */
+  mcpSpecs?: NodeSpec[];
+  /**
+   * Pre-rendered catalog text for {@link mcpSpecs}, built once by `select`
+   * (not re-derived by `design` on every attempt) for the same
+   * duplicate-warning reason `runtime.catalog` is computed once per `plan()`
+   * call rather than once per `design` attempt (T1 review round 2, I3).
+   */
+  mcpCatalogText?: string;
+  /**
+   * Set by `correct` on every call it makes (never omitted — mirrors
+   * `designFeedback`'s clearing discipline so a stale value can never
+   * survive): `'design'` or `'select'` when continuing (D2b's routing
+   * extension: an unresolved `mcp:` key routes back to `select` instead of
+   * `design`, catalog path only), `undefined` when exhausted. `routeAfterCorrect`
+   * reads this directly instead of re-deriving continue/stop/target from
+   * `attempts`/`validationIssues` (same "trust the decision, don't recompute
+   * on post-update state" reasoning as the original `designFeedback` proxy).
+   */
+  correctTarget?: 'design' | 'select';
 }
 
 const plannerStateSpec: StateDefinition = {
@@ -104,6 +143,44 @@ const plannerStateSpec: StateDefinition = {
   designError: Annotation<string | undefined>({
     reducer: (_existing: string | undefined, update: string | undefined) => update,
     default: (): string | undefined => undefined,
+  }),
+
+  taskSummary: Annotation<string | undefined>({
+    reducer: (_existing: string | undefined, update: string | undefined) => update,
+    default: (): string | undefined => undefined,
+  }),
+
+  needsMcp: Annotation<boolean | undefined>({
+    reducer: (_existing: boolean | undefined, update: boolean | undefined) => update,
+    default: (): boolean | undefined => undefined,
+  }),
+
+  candidateProviderKeys: Annotation<string[] | undefined>({
+    reducer: (_existing: string[] | undefined, update: string[] | undefined) => update,
+    default: (): string[] | undefined => undefined,
+  }),
+
+  selectedMcpKeys: Annotation<string[] | undefined>({
+    reducer: (_existing: string[] | undefined, update: string[] | undefined) => update,
+    default: (): string[] | undefined => undefined,
+  }),
+
+  mcpSpecs: Annotation<NodeSpec[] | undefined>({
+    reducer: (_existing: NodeSpec[] | undefined, update: NodeSpec[] | undefined) => update,
+    default: (): NodeSpec[] | undefined => undefined,
+  }),
+
+  mcpCatalogText: Annotation<string | undefined>({
+    reducer: (_existing: string | undefined, update: string | undefined) => update,
+    default: (): string | undefined => undefined,
+  }),
+
+  correctTarget: Annotation<'design' | 'select' | undefined>({
+    reducer: (
+      _existing: 'design' | 'select' | undefined,
+      update: 'design' | 'select' | undefined
+    ) => update,
+    default: (): 'design' | 'select' | undefined => undefined,
   }),
 };
 

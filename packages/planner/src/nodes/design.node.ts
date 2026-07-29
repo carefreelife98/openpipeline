@@ -12,6 +12,7 @@ import { checkAbort } from '../abort.js';
 import { applyAutoFill } from '../auto-fill.js';
 import { buildIdAssignment, type IdAssignment } from '../id-map.js';
 import { computeLayeredPositions } from '../layout.js';
+import { mergeSpecs } from '../mcp-routing.js';
 import { buildDesignPrompt, DESIGN_SYSTEM_PROMPT } from '../prompts.js';
 import type { PlannerRuntime } from '../runtime.js';
 import { PlannerDraftSchema, type PlannerDraft, type PlannerDraftNode } from '../schema.js';
@@ -101,11 +102,24 @@ export async function designNode(
     detail: state.designFeedback ? 'revising draft after validation feedback' : 'generating draft',
   });
 
-  const specsByKey = new Map(runtime.specs.map((spec) => [spec.key, spec] as const));
+  // T2: merges in whatever `select` resolved this round (empty/undefined on
+  // the no-MCP path, and on the MCP path before `select` has ever run) — see
+  // `mergeSpecs`'s doc comment for why mcp specs are appended, not prepended.
+  const specsByKey = new Map(
+    mergeSpecs(runtime.specs, state.mcpSpecs).map((spec) => [spec.key, spec] as const)
+  );
+
+  // `state.mcpCatalogText` is built once by `select` per round (never
+  // recomputed here) for the exact duplicate-warning reason
+  // `runtime.catalog.text` is computed once per `plan()` call rather than
+  // once per `design` attempt (T1 review round 2, I3) — see `select.node.ts`.
+  const catalogText = state.mcpCatalogText
+    ? `${runtime.catalog.text}\n${state.mcpCatalogText}`
+    : runtime.catalog.text;
 
   const prompt = buildDesignPrompt({
     instruction: state.instruction,
-    catalogText: runtime.catalog.text,
+    catalogText,
     feedback: state.designFeedback,
   });
 
@@ -131,7 +145,17 @@ export async function designNode(
     const message = describeSchemaFailure(err);
     return {
       designError: message,
-      validationIssues: [{ code: 'NODE_TYPE_MISMATCH', message }],
+      // MERGE onto `state.validationIssues`, never replace it (T1 carried-over
+      // minor, t1-review-r2.md's re-review round): `validationIssues` is a
+      // last-write-wins channel, so returning ONLY this attempt's schema issue
+      // would silently drop whatever `validate` found on the previous pass —
+      // e.g. attempt 1's real dangling-edge defect (still relevant: `draft`
+      // stays whatever attempt 1 last produced, since THIS attempt never
+      // reached a `PipelineDraft` to replace it) would vanish from
+      // `unresolvedValidationErrors` the instant a later attempt merely fails
+      // to parse, on top of the genuine structural defect never having been
+      // fixed. Appending keeps both, oldest first.
+      validationIssues: [...state.validationIssues, { code: 'NODE_TYPE_MISMATCH', message }],
       designFeedback: undefined,
     };
   }

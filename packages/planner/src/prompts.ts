@@ -1,4 +1,4 @@
-import type { NodeSpec } from '@openpipeline/core';
+import type { NodeSpec, ResolvedProvider } from '@openpipeline/core';
 import { z } from 'zod';
 
 export const DESIGN_SYSTEM_PROMPT =
@@ -83,5 +83,76 @@ export function buildDesignPrompt(params: DesignPromptParams): string {
         `that fixes every issue below:\n${params.feedback}`
     );
   }
+  return sections.join('\n');
+}
+
+// ── T2: MCP-catalog path (D2's `intent` and `select` nodes) ─────────────────
+
+export const INTENT_SYSTEM_PROMPT =
+  'You are the intent-classification step of a pipeline planner for OpenPipeline. Given a user ' +
+  "instruction, summarize the user's task in one sentence and decide whether fulfilling it " +
+  'requires calling an external MCP (Model Context Protocol) tool beyond the built-in node ' +
+  'specs this planner already has. If you can name specific MCP providers that sound relevant ' +
+  'from the instruction alone, list their keys as a hint for the next step.';
+
+export interface IntentPromptParams {
+  instruction: string;
+}
+
+export function buildIntentPrompt(params: IntentPromptParams): string {
+  return [
+    `User instruction:\n${params.instruction}`,
+    '\nDecide whether this instruction needs an external MCP tool (e.g. web search, a specific ' +
+      'third-party API or integration) that goes beyond a generic built-in capability. If unsure, ' +
+      'prefer needsMcp: true so the next step can offer you a tool catalog to pick from.',
+  ].join('\n');
+}
+
+export const SELECT_SYSTEM_PROMPT =
+  'You are the MCP tool-selection step of a pipeline planner for OpenPipeline. Given a user ' +
+  'instruction and a catalog of available MCP provider tools, pick only the tools actually ' +
+  'needed to fulfill the instruction — an empty selection is correct when none of them apply.';
+
+/** How many characters of a tool's description are shown in the select prompt (D2). */
+const SELECT_DESCRIPTION_TRUNCATE_LENGTH = 240;
+
+/**
+ * Renders every provider/tool in a loaded MCP catalog as `mcp:<provider>:<tool>`
+ * key + truncated description, for embedding in the select prompt (D2: "prompt
+ * lists provider/tool keys + descriptions truncated 240 chars"). A tool with
+ * no description renders an empty one rather than being skipped — `select`
+ * still needs to see the key exists.
+ */
+export function buildMcpCatalogText(providers: readonly ResolvedProvider[]): string {
+  const blocks: string[] = [];
+  for (const provider of providers) {
+    for (const tool of provider.tools) {
+      const description = (tool.description ?? '').slice(0, SELECT_DESCRIPTION_TRUNCATE_LENGTH);
+      blocks.push(
+        [
+          `- key: ${JSON.stringify(`mcp:${provider.key}:${tool.name}`)}`,
+          `  provider: ${JSON.stringify(provider.displayName)}`,
+          `  description: ${JSON.stringify(description)}`,
+        ].join('\n')
+      );
+    }
+  }
+  return blocks.join('\n');
+}
+
+export interface SelectPromptParams {
+  instruction: string;
+  taskSummary?: string;
+  catalogText: string;
+}
+
+export function buildSelectPrompt(params: SelectPromptParams): string {
+  const sections = [`User instruction:\n${params.instruction}`];
+  if (params.taskSummary) sections.push(`\nTask summary:\n${params.taskSummary}`);
+  sections.push(`\nAvailable MCP tools:\n${params.catalogText || '(none)'}`);
+  sections.push(
+    '\nReturn the "mcp:<provider>:<tool>" keys you need, copied EXACTLY from the catalog above. ' +
+      'Return an empty array if none of them are needed.'
+  );
   return sections.join('\n');
 }

@@ -1,9 +1,11 @@
 import { END, START, StateGraph } from '@langchain/langgraph';
-import { NOOP_LOGGER } from '@openpipeline/core';
+import { NOOP_LOGGER, type CatalogLoader, type McpNodeResolver } from '@openpipeline/core';
 
 import { checkAbort } from './abort.js';
 import { correctNode } from './nodes/correct.node.js';
 import { designNode } from './nodes/design.node.js';
+import { intentNode } from './nodes/intent.node.js';
+import { selectNode } from './nodes/select.node.js';
 import { validateNode } from './nodes/validate.node.js';
 import { buildSpecCatalogText } from './prompts.js';
 import type { PlannerRuntime } from './runtime.js';
@@ -26,11 +28,20 @@ function readPlannerState(output: unknown): PlannerState {
 }
 
 /**
- * Builds a fresh compiled `design -> validate -> correct` LangGraph for a
- * single `plan()` call (D2). `catalogLoader`-driven `intent -> select`
- * routing is not implemented in this build — see {@link PipelinePlanner}'s
- * constructor, which rejects those options up front so this always builds
- * `START -> design`.
+ * Builds a fresh compiled LangGraph for a single `plan()` call (D2).
+ *
+ * Two topologies, chosen by whether `runtime.catalogLoader`/`mcpNodeResolver`
+ * are both set (the constructor guarantees they are set together or neither
+ * is — see {@link PipelinePlanner}'s constructor):
+ *
+ * - No catalog: `START -> design -> validate -> correct -> (design | end)` —
+ *   T1's original loop, byte-for-byte unchanged in shape.
+ * - Catalog configured: `START -> intent -> (select | design)`, `select ->
+ *   design` unconditionally, and `correct -> (select | design | end)` — D2's
+ *   `intent`/`select` nodes only ever exist in the compiled graph on this
+ *   path, so `select` genuinely cannot run without a catalog (matches
+ *   `select.node.ts`'s `requireCatalogDeps` defensive guard: reaching it any
+ *   other way is a wiring bug, not a reachable runtime state).
  */
 // `PlannerStateAnnotation` is deliberately typed as the erased
 // `AnnotationRoot<StateDefinition>` (see state.ts) — the same "shield"
@@ -42,11 +53,24 @@ function readPlannerState(output: unknown): PlannerState {
 // `compiler.ts` hits the identical tension against `PipelineStateAnnotation`
 // and resolves it the same way: a `never` cast at the `addNode` call site
 // (`runner as never`) rather than fighting the erasure with an unsound `as
-// PlannerState` inside the closure.
+// PlannerState` inside the closure. Built imperatively (statement-by-statement
+// on one `const graph`, not a single reassigned fluent chain) so the two
+// topologies can share the common nodes/edges — `compiler.ts` uses the same
+// imperative style for its own conditionally-shaped graph — which means node
+// names lose the fluent chain's own literal-type tracking the same way
+// `compiler.ts`'s dynamic node ids do, so every node-name string argument
+// below is `as never` too, not just the handler/router closures.
 function buildPlannerGraph(runtime: PlannerRuntime, maxAttempts: number) {
+  const intent = (state: PlannerState) => intentNode(state, runtime);
+  const select = (state: PlannerState) => selectNode(state, runtime);
   const design = (state: PlannerState) => designNode(state, runtime);
   const validate = (state: PlannerState) => validateNode(state, runtime);
   const correct = (state: PlannerState) => correctNode(state, runtime, maxAttempts);
+
+  // D2: `needsMcp: false` skips `select` (and therefore its catalog load and
+  // its LLM call) entirely.
+  const routeAfterIntent = (state: PlannerState) =>
+    state.needsMcp === false ? 'design' : 'select';
   // T1 review round 3, M6: a schema-parse failure has no `PlannerDraft` to
   // build a `PipelineWithGraph` from, so `validate` can't run at all for this
   // round — route straight to `correct` instead. `designNode` sets
@@ -58,7 +82,7 @@ function buildPlannerGraph(runtime: PlannerRuntime, maxAttempts: number) {
     state.designError !== undefined ? 'correct' : 'validate';
   const routeAfterValidate = (state: PlannerState) =>
     state.validationIssues.length === 0 ? 'end' : 'correct';
-  // Trusts `correctNode`'s own continue/stop decision instead of
+  // Trusts `correctNode`'s own continue/stop/target decision instead of
   // re-deriving it from `state.attempts` here. Conditional-edge routers only
   // ever observe state *after* the preceding node's update has been merged,
   // so re-checking `attempts >= maxAttempts` on the post-update value would
@@ -67,38 +91,76 @@ function buildPlannerGraph(runtime: PlannerRuntime, maxAttempts: number) {
   // the round where `attempts` becomes exactly `maxAttempts` is precisely
   // the round it just decided TO continue on — re-checking `>=` here would
   // wrongly end the run one `design` call early, right back into the same
-  // off-by-one this was fixing. `designFeedback` is a reliable proxy instead:
-  // `correctNode` sets it if and only if it decided to continue, and
-  // `designNode` unconditionally clears it back to `undefined` on every run,
-  // so it can never be stale here.
-  const routeAfterCorrect = (state: PlannerState) =>
-    state.designFeedback !== undefined ? 'design' : 'end';
+  // off-by-one this was fixing. `correctTarget` is a reliable proxy instead
+  // (D2b): `correctNode` sets it to `'design'`/`'select'` if and only if it
+  // decided to continue (and to which node), and unconditionally clears it
+  // back to `undefined` when exhausted, so it can never be stale here.
+  const routeAfterCorrect = (state: PlannerState) => state.correctTarget ?? 'end';
 
-  return new StateGraph(PlannerStateAnnotation)
-    .addNode('design', design as never)
-    .addNode('validate', validate as never)
-    .addNode('correct', correct as never)
-    .addEdge(START, 'design')
-    .addConditionalEdges('design', routeAfterDesign as never, {
+  const catalogPathActive =
+    runtime.catalogLoader !== undefined && runtime.mcpNodeResolver !== undefined;
+
+  const graph = new StateGraph(PlannerStateAnnotation)
+    .addNode('design' as never, design as never)
+    .addNode('validate' as never, validate as never)
+    .addNode('correct' as never, correct as never);
+
+  if (catalogPathActive) {
+    graph.addNode('intent' as never, intent as never);
+    graph.addNode('select' as never, select as never);
+  }
+
+  graph.addEdge(START, (catalogPathActive ? 'intent' : 'design') as never);
+
+  if (catalogPathActive) {
+    graph.addConditionalEdges(
+      'intent' as never,
+      routeAfterIntent as never,
+      {
+        design: 'design',
+        select: 'select',
+      } as never
+    );
+    graph.addEdge('select' as never, 'design' as never);
+  }
+
+  graph.addConditionalEdges(
+    'design' as never,
+    routeAfterDesign as never,
+    {
       validate: 'validate',
       correct: 'correct',
-    })
-    .addConditionalEdges('validate', routeAfterValidate as never, { end: END, correct: 'correct' })
-    .addConditionalEdges('correct', routeAfterCorrect as never, { end: END, design: 'design' })
-    .compile();
+    } as never
+  );
+  graph.addConditionalEdges(
+    'validate' as never,
+    routeAfterValidate as never,
+    {
+      end: END,
+      correct: 'correct',
+    } as never
+  );
+  graph.addConditionalEdges(
+    'correct' as never,
+    routeAfterCorrect as never,
+    (catalogPathActive
+      ? { end: END, design: 'design', select: 'select' }
+      : { end: END, design: 'design' }) as never
+  );
+
+  return graph.compile();
 }
 
 /**
  * D1's public API: turns a natural-language instruction into a validated
  * `PipelineDraft` via an LLM-driven design -> validate -> correct loop.
  *
- * This build implements only the no-MCP path: `specs` must be static
- * (TOOL/LLM/IF) `NodeSpec`s, and the constructor throws if `catalogLoader` or
- * `mcpNodeResolver` is supplied — the `intent -> select` routing D2 describes
- * for MCP tool selection is a tracked follow-up (a real `select` LangGraph
- * node has to exist before `correct` can route selection-related errors to
- * it), not something this build silently degrades into ignoring a configured
- * catalog.
+ * `specs` (static TOOL/LLM/IF `NodeSpec`s) is always required. `catalogLoader`
+ * and `mcpNodeResolver` (D2's `intent -> select` MCP tool-selection routing)
+ * are optional but MUST be provided together — the constructor throws a clear
+ * error if only one is supplied, since neither one alone is enough to load a
+ * catalog AND resolve a selection from it. Passing neither keeps the graph
+ * exactly the no-MCP `design -> validate -> correct` loop T1 shipped.
  */
 export class PipelinePlanner {
   private readonly llmFactory: PipelinePlannerOptions['llmFactory'];
@@ -107,13 +169,24 @@ export class PipelinePlanner {
   private readonly maxAttempts: number;
   private readonly temperature: number;
   private readonly logger: NonNullable<PipelinePlannerOptions['logger']>;
+  private readonly catalogLoader?: CatalogLoader;
+  private readonly mcpNodeResolver?: McpNodeResolver;
 
   constructor(options: PipelinePlannerOptions) {
-    if (options.catalogLoader || options.mcpNodeResolver) {
+    const hasCatalogLoader = options.catalogLoader !== undefined;
+    const hasMcpNodeResolver = options.mcpNodeResolver !== undefined;
+    // D2: the MCP-catalog path needs BOTH a way to load the catalog and a way
+    // to resolve a selection from it into a NodeSpec — one without the other
+    // can never produce a usable `select` node, so it's rejected up front
+    // instead of silently degrading (e.g. loading a catalog that can never be
+    // turned into specs, or resolving specs no catalog ever offered).
+    if (hasCatalogLoader !== hasMcpNodeResolver) {
+      const supplied = hasCatalogLoader ? 'catalogLoader' : 'mcpNodeResolver';
+      const missing = hasCatalogLoader ? 'mcpNodeResolver' : 'catalogLoader';
       throw new Error(
-        '[PipelinePlanner] catalogLoader/mcpNodeResolver-driven MCP tool selection is not ' +
-          'implemented in this build (no-MCP path only, D2 intent/select nodes are a tracked ' +
-          'follow-up). Construct without them.'
+        `[PipelinePlanner] catalogLoader and mcpNodeResolver must be provided together to enable ` +
+          `the MCP tool-selection (intent -> select) path (D2) — only ${supplied} was supplied; ` +
+          `${missing} is also required. Provide both, or neither for the static-specs-only path.`
       );
     }
     if (!options.modelId) {
@@ -123,6 +196,8 @@ export class PipelinePlanner {
     this.llmFactory = options.llmFactory;
     this.modelId = options.modelId;
     this.specsInput = options.specs;
+    this.catalogLoader = options.catalogLoader;
+    this.mcpNodeResolver = options.mcpNodeResolver;
     this.maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
     // T1 review round 3, I1-R3: `maxAttempts` used to flow unvalidated into
     // BOTH loop-stop conditions (`correct.node.ts`'s `state.attempts >=
@@ -162,6 +237,9 @@ export class PipelinePlanner {
     // exactly once per run rather than once per attempt.
     const catalog = buildSpecCatalogText(specs);
 
+    const catalogPathActive =
+      this.catalogLoader !== undefined && this.mcpNodeResolver !== undefined;
+
     const runtime: PlannerRuntime = {
       llmFactory: this.llmFactory,
       modelId: this.modelId,
@@ -171,24 +249,58 @@ export class PipelinePlanner {
       logger: this.logger,
       signal: request.signal,
       onProgress: request.onProgress,
+      // D2: `context` bases both `catalogLoader.load(ctx)` and
+      // `mcpNodeResolver.resolveSpec(key, ctx)`'s `ctx` — an empty object on
+      // the no-MCP path (never read there) and whenever a caller omits
+      // `request.context`. `mcpCatalogBox` starts empty every `plan()` call
+      // (never reused across calls) — `select.node.ts` populates `.loaded` at
+      // most once per call, and the `finally` below reads it back after
+      // `app.invoke()` settles to guarantee `cleanup()` fires exactly once.
+      context: request.context ?? {},
+      mcpCatalogBox: {},
+      catalogLoader: this.catalogLoader,
+      mcpNodeResolver: this.mcpNodeResolver,
     };
 
     const app = buildPlannerGraph(runtime, this.maxAttempts);
-    // Each design/correction round costs 3 LangGraph super-steps (design ->
-    // validate -> correct), so a run bounded by `maxAttempts` needs ~3 *
-    // maxAttempts super-steps in the worst case (always-invalid drafts,
-    // every round routes validate -> correct -> design again). LangGraph's
+    // Each design/correction round costs 3 LangGraph super-steps on the
+    // no-MCP path (design -> validate -> correct) or 4 on the MCP-catalog
+    // path (select -> design -> validate -> correct — D2b's routing
+    // extension can send `correct` back to `select`, so every round has to
+    // budget for a `select` super-step even though a given round might not
+    // actually spend it), so a run bounded by `maxAttempts` needs ~3 (or 4) *
+    // maxAttempts super-steps in the worst case (always-invalid drafts, every
+    // round routes validate -> correct -> design/select again). LangGraph's
     // default `recursionLimit` is 25, which silently caps out around
-    // `maxAttempts = 8` and throws an opaque `GraphRecursionError` instead of
-    // the documented exhaustion `PlannerResult` (T1 review round 2, I1) —
-    // derive an explicit limit from the already-known loop bound instead of
-    // trusting the library default. The `+ 2` covers START -> design and a
-    // final correct -> END super-step.
-    const rawOutput: unknown = await app.invoke(
-      { instruction: request.instruction, plannerWarnings: catalog.warnings },
-      { recursionLimit: this.maxAttempts * 3 + 2 }
-    );
-    const finalState = readPlannerState(rawOutput);
+    // `maxAttempts = 8` (no-MCP) or `maxAttempts = 6` (MCP) and throws an
+    // opaque `GraphRecursionError` instead of the documented exhaustion
+    // `PlannerResult` (T1 review round 2, I1) — derive an explicit limit from
+    // the already-known loop bound instead of trusting the library default.
+    // The trailing `+2`/`+3` covers `START -> design`/`START -> intent -> select`
+    // and a final `correct -> END` super-step.
+    const superStepsPerRound = catalogPathActive ? 4 : 3;
+    const recursionLimitSlack = catalogPathActive ? 3 : 2;
+    let finalState: PlannerState;
+    try {
+      const rawOutput: unknown = await app.invoke(
+        { instruction: request.instruction, plannerWarnings: catalog.warnings },
+        { recursionLimit: this.maxAttempts * superStepsPerRound + recursionLimitSlack }
+      );
+      finalState = readPlannerState(rawOutput);
+    } finally {
+      // D2: guaranteed exactly once per `plan()` call, on EVERY exit path —
+      // success, a thrown error (e.g. an LLM failure mid-run), or a
+      // `PipelineAbortedError` from `checkAbort` — by reading the SAME
+      // `mcpCatalogBox` reference `select.node.ts` populates, rather than
+      // making `select` (or any other node) responsible for its own cleanup:
+      // `select` may run more than once per `plan()` call (D2b's
+      // correct-routing extension), and cleanup must fire only once, after
+      // the whole run settles, never after every individual `select` entry.
+      // A no-op on the no-MCP path and on any run where `select` never ran
+      // (`needsMcp: false`, or `catalogLoader`/`mcpNodeResolver` weren't
+      // configured) — `.loaded` is `undefined` in both cases.
+      await runtime.mcpCatalogBox.loaded?.cleanup();
+    }
 
     if (!finalState.draft) {
       // Reachable in exactly one case since T1 review round 3's M6 fix:

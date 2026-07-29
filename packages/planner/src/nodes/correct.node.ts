@@ -1,5 +1,6 @@
 import { checkAbort } from '../abort.js';
 import { buildDesignFeedback } from '../id-map.js';
+import { issuesReferenceUnresolvedMcpKey } from '../mcp-routing.js';
 import type { PlannerRuntime } from '../runtime.js';
 import type { PlannerState } from '../state.js';
 
@@ -14,20 +15,24 @@ import type { PlannerState } from '../state.js';
  * behaviorally identical to `maxAttempts: 1`).
  *
  * - Exhausted (`state.attempts >= maxAttempts`): give up without a further
- *   `design` call, carrying `state.validationIssues` through unchanged for
- *   `plan()` to surface as `unresolvedValidationErrors`. `attempts` is left
- *   untouched — it already equals the number of `design` calls made.
- * - Otherwise: `attempts++`, then build short-id-rewritten feedback (D4) for
- *   the next `design` call.
- *
- * D2 also describes routing selection-related errors (an unknown `mcp:` key)
- * to a `select` node when a catalog is configured. This build only supports
- * the no-catalog path (the constructor throws if `catalogLoader` /
- * `mcpNodeResolver` is passed — see `planner.ts`), so a `select` node does
- * not exist yet and every non-exhausted retry routes back to `design`. The
- * `select`-routing branch is intentionally NOT implemented here — tracked as
- * a follow-up alongside the intent/select nodes themselves, not silently
- * approximated.
+ *   `design`/`select` call, carrying `state.validationIssues` through
+ *   unchanged for `plan()` to surface as `unresolvedValidationErrors`.
+ *   `attempts` is left untouched — it already equals the number of `design`
+ *   calls made. `correctTarget` is explicitly cleared back to `undefined`
+ *   here (never just omitted) so a PREVIOUS non-exhausted round's `'design'`/
+ *   `'select'` value can never survive stale into `routeAfterCorrect` on the
+ *   round that actually exhausts — mirrors `designFeedback`/`designError`'s
+ *   own "unconditionally clear, never merely omit" discipline elsewhere in
+ *   this package.
+ * - Otherwise: `attempts++`, build short-id-rewritten feedback (D4) for the
+ *   next `design` call, and decide `correctTarget` (D2b's correct-routing
+ *   extension): on the catalog path (`catalogLoader`/`mcpNodeResolver` both
+ *   configured — checked via `runtime`, never by re-deriving it from
+ *   `state`), a validation issue referencing an unresolved `mcp:` key routes
+ *   back to `'select'` so the model gets another chance to pick a different
+ *   tool; every other issue (and the entire no-catalog path, where `select`
+ *   doesn't even exist in the compiled graph) routes to `'design'` — mirrors
+ *   Mate-X's `routeCorrection`.
  */
 export function correctNode(
   state: PlannerState,
@@ -39,10 +44,18 @@ export function correctNode(
   runtime.onProgress?.({ phase: 'correct', attempt: state.attempts });
 
   if (state.attempts >= maxAttempts) {
-    return Promise.resolve({});
+    return Promise.resolve({ correctTarget: undefined });
   }
 
   const attempts = state.attempts + 1;
   const designFeedback = buildDesignFeedback(state.validationIssues, state.idMap);
-  return Promise.resolve({ attempts, designFeedback });
+
+  const catalogPathActive =
+    runtime.catalogLoader !== undefined && runtime.mcpNodeResolver !== undefined;
+  const correctTarget =
+    catalogPathActive && issuesReferenceUnresolvedMcpKey(state.validationIssues, state.draft)
+      ? 'select'
+      : 'design';
+
+  return Promise.resolve({ attempts, designFeedback, correctTarget });
 }

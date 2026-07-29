@@ -51,3 +51,49 @@ export const PlannerDraftSchema = z.object({
 export type PlannerDraftNode = z.infer<typeof PlannerDraftNodeSchema>;
 export type PlannerDraftEdge = z.infer<typeof PlannerDraftEdgeSchema>;
 export type PlannerDraft = z.infer<typeof PlannerDraftSchema>;
+
+// T2 — D2's `intent` structured-output contract: `{ taskSummary, needsMcp,
+// candidateProviderKeys }`. Only used on the MCP-catalog path (`intent` isn't
+// wired into the no-catalog graph).
+
+export const IntentSchema = z.object({
+  taskSummary: z
+    .string()
+    .min(1)
+    .describe("A one-sentence summary of what the user's instruction is asking for."),
+  needsMcp: z
+    .boolean()
+    .describe(
+      'True if fulfilling this instruction requires an external MCP tool (e.g. web search, a ' +
+        'third-party API or integration) beyond the static node specs already available. If ' +
+        'unsure, prefer true so a tool catalog can be offered.'
+    ),
+  candidateProviderKeys: z
+    .array(z.string())
+    .describe(
+      'Zero or more MCP provider keys that seem relevant to this instruction, if you can guess ' +
+        'any from the instruction alone (informational hint only — the actual catalog is shown ' +
+        'separately in the next step). Empty array if none come to mind or needsMcp is false.'
+    ),
+});
+
+export type Intent = z.infer<typeof IntentSchema>;
+
+// T2 — D2's `select` structured-output contract: the model picks zero or
+// more `mcp:<provider>:<tool>` keys copied exactly from the catalog shown to
+// it. Deliberately `z.string()`, not a dynamic `z.enum(...)` built from the
+// live catalog: an out-of-catalog or malformed key is filtered out by
+// `selectNode` itself (fail-soft — D2), not rejected at the schema layer,
+// mirroring `PlannerDraftNodeSchema.key`'s same "copied exactly, validated
+// downstream" treatment.
+
+export const SelectSchema = z.object({
+  selectedKeys: z
+    .array(z.string())
+    .describe(
+      'Zero or more "mcp:<provider>:<tool>" keys, copied EXACTLY from the catalog above, that ' +
+        'are actually needed to fulfill the instruction. Return an empty array if none are needed.'
+    ),
+});
+
+export type SelectDraft = z.infer<typeof SelectSchema>;
