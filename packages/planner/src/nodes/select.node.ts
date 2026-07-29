@@ -8,6 +8,7 @@ import type {
 import { z } from 'zod';
 
 import { checkAbort } from '../abort.js';
+import { mergeResolvedMcpSpecs } from '../mcp-routing.js';
 import {
   buildMcpCatalogText,
   buildSelectPrompt,
@@ -90,7 +91,16 @@ function dedupeAgainstExisting(
  *   `validate` as an unknown key.
  * - Each individually selected key is resolved via
  *   `mcpNodeResolver.resolveSpec` in its own try/catch; a failure drops just
- *   that key (with its own `plannerWarning`), it never aborts the others.
+ *   that key (with its own `plannerWarning`), it never aborts the others. A
+ *   non-empty D2b re-entry merges its freshly-resolved specs with whatever an
+ *   EARLIER round already resolved (`mergeResolvedMcpSpecs`, keyed by
+ *   `spec.key`, this round's resolution winning on a collision) rather than
+ *   replacing `state.mcpSpecs` outright — the same preservation semantics the
+ *   empty-selection branch already has (T2 review Minor 4), unified across
+ *   both branches (T2 re-review round 2, Minor-4 residual, carried over to
+ *   T3): otherwise a re-selection that resolves ANY key at all, even a
+ *   disjoint one, would silently drop an earlier round's still-referenced
+ *   key and force an extra correction round to rediscover it.
  * - Every `plannerWarnings` entry this node returns is deduped against
  *   `state.plannerWarnings` first (T2 review Minor 3): `select` can run more
  *   than once per `plan()` call (D2b), and the APPEND-semantics channel would
@@ -195,10 +205,19 @@ export async function selectNode(
     }
   }
 
-  const mcpCatalog = buildSpecCatalogText(resolvedSpecs);
+  // T2 re-review round 2 (Minor-4 residual, carried over to T3): merge THIS
+  // round's resolved specs with whatever an earlier D2b round already
+  // resolved, instead of replacing `state.mcpSpecs` outright — an earlier
+  // round's key that this round simply didn't re-select must survive, not
+  // just an earlier round's key when this round selects nothing at all
+  // (which the empty branch above already handled). `mcpCatalogText` is
+  // rebuilt from the SAME merged set so the two channels never disagree
+  // about which specs are actually available to `design`.
+  const mergedSpecs = mergeResolvedMcpSpecs(state.mcpSpecs, resolvedSpecs);
+  const mcpCatalog = buildSpecCatalogText(mergedSpecs);
 
   return {
-    mcpSpecs: resolvedSpecs,
+    mcpSpecs: mergedSpecs,
     mcpCatalogText: mcpCatalog.text,
     plannerWarnings: dedupeAgainstExisting(state.plannerWarnings, [
       ...resolveWarnings,

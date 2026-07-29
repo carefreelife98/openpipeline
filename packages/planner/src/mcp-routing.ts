@@ -20,6 +20,39 @@ export function mergeSpecs(
 }
 
 /**
+ * D2b re-selection: merges an EARLIER round's resolved `mcpSpecs` with THIS
+ * round's freshly-resolved ones, keyed by `spec.key`, so a D2b re-entry into
+ * `select` (a validation issue routed `correct` back to `select` — see
+ * `issuesReferenceUnresolvedMcpKey` below) can never silently drop a
+ * previously-resolved tool a still-valid part of the draft references.
+ *
+ * Same preservation semantics `select.node.ts`'s empty-reselection branch
+ * already has (T2 review Minor 4 — an earlier round's specs survive an empty
+ * re-selection because they're left untouched rather than reset to `[]`):
+ * unifies the non-empty branch, which used to write `resolvedSpecs`
+ * unconditionally and so silently dropped an earlier round's key the moment
+ * this round selected ANY key at all, even a disjoint one (T2 re-review round
+ * 2, Minor-4 residual, non-blocking — carried over to T3).
+ *
+ * "New keys win" (not "first write wins"): `current` entirely replaces any
+ * `previous` entry sharing its key, since `current` reflects what was
+ * actually just re-selected and re-resolved against the (possibly refreshed)
+ * catalog this round — the same "freshest resolution wins" reasoning
+ * `mergeSpecs` above already applies between static and mcp specs. A
+ * `previous` entry whose key does NOT appear in `current` (this round simply
+ * didn't re-select it) survives unchanged — that is the whole point.
+ */
+export function mergeResolvedMcpSpecs(
+  previous: readonly NodeSpec[] | undefined,
+  current: readonly NodeSpec[]
+): NodeSpec[] {
+  if (!previous || previous.length === 0) return [...current];
+  const currentKeys = new Set(current.map((spec) => spec.key));
+  const carriedOver = previous.filter((spec) => !currentKeys.has(spec.key));
+  return [...carriedOver, ...current];
+}
+
+/**
  * D2b's correct-routing extension: does any validation issue reference a
  * node whose `key` is an `mcp:<provider>:<tool>` key that never resolved to a
  * spec? Detected structurally from `draft.nodes` (never by parsing an issue's

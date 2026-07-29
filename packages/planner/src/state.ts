@@ -77,9 +77,12 @@ export interface PlannerState {
    * `select`'s model-chosen, catalog-validated `mcp:<provider>:<tool>` keys
    * that resolved successfully (fail-soft per key — D2). Merged with
    * `runtime.specs` by `design`/`validate` so the design catalog and graph
-   * validation both recognize the selected MCP tools. Left untouched (not
-   * reset) by an empty D2b re-selection round so an earlier round's resolved
-   * specs survive (T2 review Minor 4) — see `select.node.ts`.
+   * validation both recognize the selected MCP tools. An earlier round's
+   * resolved specs always survive a D2b re-entry into `select`: left
+   * untouched by an empty re-selection (T2 review Minor 4), and merged by key
+   * (this round's resolution wins on a collision) with a non-empty
+   * re-selection (`mergeResolvedMcpSpecs` — T2 re-review round 2, Minor-4
+   * residual, carried over to T3) — see `select.node.ts`.
    */
   mcpSpecs?: NodeSpec[];
   /**

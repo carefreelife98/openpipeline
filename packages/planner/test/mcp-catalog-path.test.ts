@@ -18,6 +18,7 @@ import {
   consumerSpec,
   echoSpec,
   mcpGenericSpec,
+  mcpOtherSpec,
   shoutSpec,
   testSpecs,
 } from './helpers/fixtures.js';
@@ -438,6 +439,68 @@ describe('(d) correct-routing extension: an unresolved mcp: key routes back to s
     // unresolved key and this would be defined instead.
     expect(result.unresolvedValidationErrors).toBeUndefined();
     expect(result.draft.nodes).toHaveLength(1);
+  });
+
+  it("a non-empty D2b re-selection merges with an earlier round's resolved mcpSpecs instead of replacing them (T2 re-review round 2, Minor-4 residual, carried over to T3)", async () => {
+    // Round 1: select resolves "mcp:demo:lookup", but design hallucinates a
+    // DIFFERENT, never-selected key ("mcp:demo:other") — correct routes back
+    // to select. Round 2: select comes back NON-empty this time — it selects
+    // "mcp:demo:other" (and resolves it), but NOT "mcp:demo:lookup" again.
+    // WITHOUT the fix, this replaces `state.mcpSpecs` with just
+    // ["mcp:demo:other"], silently dropping round 1's resolved
+    // "mcp:demo:lookup". Round 2's design then references BOTH keys: if
+    // "mcp:demo:lookup" survived the merge, validate passes on round 2; if it
+    // was dropped, it reads back as unresolved and (with maxAttempts: 2) the
+    // run exhausts instead of succeeding.
+    const catalogLoader = makeFakeCatalogLoader([
+      {
+        key: 'demo',
+        displayName: 'Demo',
+        tools: [
+          { name: 'lookup', description: 'first tool', invoke: () => Promise.resolve({}) },
+          { name: 'other', description: 'second tool', invoke: () => Promise.resolve({}) },
+        ],
+      },
+    ]);
+    const mcpNodeResolver = makeFakeMcpNodeResolver(
+      new Map([
+        [mcpGenericSpec.key, mcpGenericSpec],
+        [mcpOtherSpec.key, mcpOtherSpec],
+      ])
+    );
+    const model = new FakeChatModel([
+      intentRaw(true, ['demo']),
+      selectRaw(['mcp:demo:lookup']), // round 1 select: resolves "lookup"
+      unresolvedMcpKeyRawDraft(), // round 1 design: hallucinates "mcp:demo:other"
+      selectRaw(['mcp:demo:other']), // round 2 select re-entry: resolves "other", NOT "lookup" again
+      {
+        nodes: [
+          { id: 'n1', key: mcpGenericSpec.key, label: 'Lookup', inputs: {} },
+          { id: 'n2', key: mcpOtherSpec.key, label: 'Other', inputs: {} },
+        ],
+        edges: [],
+      }, // round 2 design: references BOTH the round-1 and round-2 resolved keys
+    ]);
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+      maxAttempts: 2,
+    });
+
+    const result = await planner.plan({ instruction: 'do something with two tools' });
+
+    // If round 1's "mcp:demo:lookup" had been dropped, this would exhaust at
+    // maxAttempts: 2 with `unresolvedValidationErrors` populated instead.
+    expect(result.unresolvedValidationErrors).toBeUndefined();
+    expect(result.attempts).toBe(2);
+    expect(result.draft.nodes).toHaveLength(2);
+    // Each key resolved exactly once, in order — round 1's key was carried
+    // over by the merge, never re-resolved by round 2.
+    expect(mcpNodeResolver.resolveCalls).toEqual(['mcp:demo:lookup', 'mcp:demo:other']);
+    expect(model.calls).toHaveLength(5);
   });
 
   it('an identical select warning across two D2b re-entries appears only once in plannerWarnings (T2 review Minor 3)', async () => {

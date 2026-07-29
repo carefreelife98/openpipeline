@@ -70,6 +70,36 @@ export const mcpGenericSpec: NodeSpec = {
   meta: { mcp: { providerKey: 'demo', providerDisplayName: 'Demo', toolName: 'lookup' } },
 };
 
+/**
+ * A second MCP-style spec, distinct provider tool from {@link mcpGenericSpec}
+ * (same provider "demo", different tool "other"). Used by the D2b non-empty
+ * re-selection merge test (`mergeResolvedMcpSpecs` — T2 re-review round 2,
+ * Minor-4 residual, carried over to T3): a round-2 `select` that picks THIS
+ * key must not silently drop round-1's already-resolved {@link mcpGenericSpec}.
+ */
+export const mcpOtherSpec: NodeSpec = {
+  key: 'mcp:demo:other',
+  nodeType: 'MCP_TOOL',
+  displayName: 'Demo - other',
+  description: 'A second tool with no declared output schema.',
+  icon: 'puzzle',
+  inputSchema: z.object({}),
+  outputSchema: z.object({
+    kind: z.literal('mcp_tool'),
+    providerKey: z.string(),
+    toolName: z.string(),
+    output: z.unknown(),
+  }),
+  handler: () =>
+    Promise.resolve({
+      kind: 'mcp_tool' as const,
+      providerKey: 'demo',
+      toolName: 'other',
+      output: {},
+    }),
+  meta: { mcp: { providerKey: 'demo', providerDisplayName: 'Demo', toolName: 'other' } },
+};
+
 /** A downstream TOOL spec with one required slot, for D5 auto-fill target tests. */
 export const consumerSpec: NodeSpec = {
   key: 'tool.consume',
