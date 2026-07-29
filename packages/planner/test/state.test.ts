@@ -1,7 +1,8 @@
 import { END, START, StateGraph } from '@langchain/langgraph';
 import { describe, expect, it } from 'vitest';
 
-import { PlannerStateAnnotation, type PlannerState } from '../src/state.js';
+import { readPlannerState } from '../src/planner.js';
+import { PlannerStateAnnotation } from '../src/state.js';
 
 /**
  * T1 review round 3, M1: fix pass 2 removed the only node-level
@@ -26,7 +27,7 @@ describe('PlannerStateAnnotation — plannerWarnings channel (D7)', () => {
       .addEdge('second', END)
       .compile();
 
-    const result = (await graph.invoke({ instruction: 'x' })) as PlannerState;
+    const result = readPlannerState(await graph.invoke({ instruction: 'x' }));
 
     // Last-write-wins would leave only ['warning-b']; APPEND (D7) must keep
     // both, in the order they were written.

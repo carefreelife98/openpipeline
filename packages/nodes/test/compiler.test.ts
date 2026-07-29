@@ -233,11 +233,17 @@ describe('PipelineCompiler — K13 (IF x fan-in)', () => {
     // compiler's `defer: true` comment describes.
     let gateCallCount = 0;
     const realIfSpec = createIfNodeSpec();
+    // `countingIfSpec` stays a bare `NodeSpec` (TInput=unknown, matching
+    // `specsByKey`'s element type below), so `input` here is `unknown` — real
+    // runtime validation via `realIfSpec.inputSchema.parse` (not an `as
+    // IfInput` cast) narrows it to `IfInput` before forwarding to
+    // `realIfSpec.handler`, the same "real guard, not a blind cast" pattern
+    // the rest of this codebase uses for this exact kind of erasure.
     const countingIfSpec: NodeSpec = {
       ...realIfSpec,
       handler: (input, ctx) => {
         gateCallCount++;
-        return realIfSpec.handler(input, ctx);
+        return realIfSpec.handler(realIfSpec.inputSchema.parse(input), ctx);
       },
     };
 

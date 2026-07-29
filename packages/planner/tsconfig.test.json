@@ -1,0 +1,31 @@
+// Type-checks this package's test/** alongside its own src/** (T2 review
+// Minor 6 / gate hole): the build tsconfig.json ("include": ["src/**/*"])
+// never sees test files, so `pnpm typecheck` (which runs `tsc -p
+// tsconfig.json --noEmit` per package) was blind to type errors in tests —
+// 3 real TS2739s slipped through an entire review round this way, caught
+// only by hand. `pnpm lint`'s type-aware pass (tsconfig.eslint.json) DOES
+// cover tests, but only reports lint-RULE violations, never raw `tsc`
+// diagnostics, so it never actually surfaced these either.
+//
+// `rootDir` is the monorepo root (not "." / "./src"), and
+// `../../vitest.setup.ts` is included explicitly, so the SAME ambient type
+// augmentation vitest.config.ts's `setupFiles` wires in at runtime for every
+// package (`@testing-library/jest-dom/vitest`'s `toBeInTheDocument` etc.) is
+// also visible here — without it, packages/react's *.test.tsx files fail
+// with spurious "Property does not exist" errors for matchers that work fine
+// at actual test-run time. `"exclude": []` overrides tsconfig.base.json's
+// `**/*.test.ts`/`**/*.test.tsx` (there to keep tests out of `dist/`), which
+// would otherwise silently exclude every test file from THIS program too.
+//
+// Wired into this package's own `typecheck` script (package.json) so `pnpm
+// typecheck` (root) runs it for every package via the existing `pnpm -r`
+// fan-out — no separate root-level script or CI step needed.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "noEmit": true
+  },
+  "include": ["src/**/*", "test/**/*", "../../vitest.setup.ts"],
+  "exclude": []
+}

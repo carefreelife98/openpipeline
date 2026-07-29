@@ -847,14 +847,18 @@ describe('PrismaPipelineStore.createRun / completeRun', () => {
 
     await store.completeRun(runId, {
       status: 'FAILED',
-      error: { code: 'NODE_EXECUTION_ERROR', message: 'boom' },
+      error: { kind: 'NODE_EXECUTION', code: 'NODE_EXECUTION_ERROR', message: 'boom' },
       lastState: { step: 'n1' },
       output: { ignored: true },
     });
 
     const row = fake.tables.pipelineRun.get(runId);
     expect(row?.status).toBe('FAILED');
-    expect(row?.error).toEqual({ code: 'NODE_EXECUTION_ERROR', message: 'boom' });
+    expect(row?.error).toEqual({
+      kind: 'NODE_EXECUTION',
+      code: 'NODE_EXECUTION_ERROR',
+      message: 'boom',
+    });
     expect(row?.lastState).toEqual({ step: 'n1' });
     expect('output' in (row ?? {})).toBe(false);
   });
@@ -1262,12 +1266,13 @@ describe('PrismaPipelineStore.finish', () => {
     const stepId = await store.start({ runId: 'r1', nodeId: 'n1', nodeLabel: 'A' });
     const result: StepFinish = {
       status: 'FAILED',
-      error: { code: 'NODE_EXECUTION_ERROR', message: 'kaboom' },
+      error: { kind: 'NODE_EXECUTION', code: 'NODE_EXECUTION_ERROR', message: 'kaboom' },
     };
 
     await store.finish(stepId, result);
 
     expect(fake.tables.pipelineRunStep.get(stepId)?.error).toEqual({
+      kind: 'NODE_EXECUTION',
       code: 'NODE_EXECUTION_ERROR',
       message: 'kaboom',
     });

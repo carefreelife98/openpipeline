@@ -7,7 +7,7 @@ import type {
 } from '@openpipeline/core';
 
 /** Default single-provider/single-tool catalog: `mcp:demo:lookup`. */
-export const DEFAULT_FAKE_PROVIDERS: readonly ResolvedProvider[] = [
+export const DEFAULT_FAKE_PROVIDERS: ResolvedProvider[] = [
   {
     key: 'demo',
     displayName: 'Demo',
@@ -37,7 +37,7 @@ export interface FakeCatalogLoader extends CatalogLoader {
  * guarantee without reaching into private state.
  */
 export function makeFakeCatalogLoader(
-  providers: readonly ResolvedProvider[] = DEFAULT_FAKE_PROVIDERS
+  providers: ResolvedProvider[] = DEFAULT_FAKE_PROVIDERS
 ): FakeCatalogLoader {
   const state = { loadCalls: 0, cleanupCalls: 0 };
   return {
