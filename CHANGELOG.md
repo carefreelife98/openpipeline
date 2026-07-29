@@ -18,10 +18,21 @@ All 9 `@openpipeline/*` packages (`core`, `nodes`, `planner`, `runtime`, `mcp`,
   `PipelineDraft` — short-id-based LLM output remapped to stable UUIDs across
   correction rounds (survives a reused short id turning into the same
   persisted id), deterministic auto-fill for generic-unknown-output MCP
-  specs, and a simple layered advisory layout (no `dagre` dependency). No-MCP
-  build: static `specs` only — `catalogLoader`/`mcpNodeResolver`-driven
-  `intent -> select` tool-selection routing throws synchronously from the
-  constructor and is not implemented yet (tracked follow-up).
+  specs, and a simple layered advisory layout (no `dagre` dependency).
+- **MCP tool selection (`intent -> select`).** Passing `catalogLoader` and
+  `mcpNodeResolver` together (both are required — the constructor throws if
+  only one is supplied) enables a catalog-gated `intent -> select` path ahead
+  of `design`: `intent` decides whether the instruction needs an MCP tool at
+  all (`needsMcp: false` skips `select`'s catalog load and LLM call
+  entirely), `select` picks `mcp:<provider>:<tool>` keys from the loaded
+  catalog (fail-soft — an empty/invalid selection gets one same-input retry,
+  then a `plannerWarning` and the run proceeds with static specs only; each
+  selected key resolves to a `NodeSpec` independently, so one failing
+  resolution doesn't drop the others), and a correction-loop validation error
+  naming an unresolved `mcp:` key routes back to `select` instead of
+  `design`. The loaded catalog's `cleanup()` runs exactly once per `plan()`
+  call on every exit path (success, failure, or abort). Omitting both options
+  keeps the exact no-MCP `design -> validate -> correct` loop.
 
 ## [0.4.0] - 2026-07-28
 
