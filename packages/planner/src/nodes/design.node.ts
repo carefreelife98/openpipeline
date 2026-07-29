@@ -15,13 +15,12 @@ import { computeLayeredPositions } from '../layout.js';
 import { mergeSpecs } from '../mcp-routing.js';
 import { buildDesignPrompt, DESIGN_SYSTEM_PROMPT } from '../prompts.js';
 import type { PlannerRuntime } from '../runtime.js';
+import { summarizeZodIssues } from '../schema-failure.js';
 import { PlannerDraftSchema, type PlannerDraft, type PlannerDraftNode } from '../schema.js';
 import type { PlannerState } from '../state.js';
 import { asStructuredOutputModel } from '../structured-output.js';
 
 const MAX_NAME_LENGTH = 80;
-/** How many of a ZodError's issues to quote back to the model — enough to be actionable, not a full dump. */
-const MAX_SCHEMA_ISSUES = 3;
 
 function derivePipelineName(instruction: string): string {
   const trimmed = instruction.trim().replace(/\s+/g, ' ');
@@ -59,17 +58,12 @@ function remapInputs(inputs: PlannerDraftNode['inputs'], idAssignment: IdAssignm
 }
 
 /**
- * Renders the first few issues of a `PlannerDraftSchema.parse` failure into a
- * short, model-readable summary (T1 review round 3, M6). Capped at
- * {@link MAX_SCHEMA_ISSUES} — enough to be actionable without dumping the
- * entire ZodError tree into the next design prompt.
+ * Renders a `PlannerDraftSchema.parse` failure into a short, model-readable
+ * feedback sentence (T1 review round 3, M6) built around
+ * {@link summarizeZodIssues}'s shared issue summary.
  */
 function describeSchemaFailure(err: z.ZodError): string {
-  const summary = err.issues
-    .slice(0, MAX_SCHEMA_ISSUES)
-    .map((issue) => `${issue.path.length > 0 ? issue.path.join('.') : '(root)'}: ${issue.message}`)
-    .join('; ');
-  return `your previous response did not match the required schema: ${summary}`;
+  return `your previous response did not match the required schema: ${summarizeZodIssues(err)}`;
 }
 
 /**

@@ -1,8 +1,10 @@
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
+import { z } from 'zod';
 
 import { checkAbort } from '../abort.js';
 import { buildIntentPrompt, INTENT_SYSTEM_PROMPT } from '../prompts.js';
 import type { PlannerRuntime } from '../runtime.js';
+import { summarizeZodIssues } from '../schema-failure.js';
 import { IntentSchema } from '../schema.js';
 import type { PlannerState } from '../state.js';
 import { asStructuredOutputModel } from '../structured-output.js';
@@ -16,11 +18,16 @@ import { asStructuredOutputModel } from '../structured-output.js';
  *
  * Runs once per `plan()` call, not once per correction attempt — `correct`
  * never routes back here (only `design`/`select` — see `correct.node.ts`), so
- * there is no retry loop to consider for a schema-parse failure the way
- * `design.node.ts` handles one (T1 review round 3, M6): a malformed
- * structured output here throws, the same defensive-only treatment
- * `validate.node.ts`'s "no draft in state" guard uses for a condition that
- * should be structurally unreachable with a real, schema-following model.
+ * there is no retry loop to consider. If the model's structured output fails
+ * `IntentSchema.parse` (a schema-SHAPE defect), this does NOT abort `plan()`
+ * (T2 review Important 1 / Minor 1: real models do return off-schema
+ * structured output — the same assumption T1 review round 3, M6 already
+ * rejected for `design`, and Important 1 extends to `select`). It's caught
+ * here and degrades to `needsMcp: false` with a `plannerWarning` naming the
+ * schema failure — `routeAfterIntent` then sends the run straight to `design`
+ * with static specs only, the same non-blocking degradation `select`'s own
+ * fail-soft path uses. Only a non-Zod error (a genuine LLM/network failure)
+ * still rejects `plan()`.
  */
 export async function intentNode(
   state: PlannerState,
@@ -40,11 +47,22 @@ export async function intentNode(
   const prompt = buildIntentPrompt({ instruction: state.instruction });
   const messages = [new SystemMessage(INTENT_SYSTEM_PROMPT), new HumanMessage(prompt)];
   const rawOutput = await structuredModel.invoke(messages);
-  const intent = IntentSchema.parse(rawOutput);
 
-  return {
-    taskSummary: intent.taskSummary,
-    needsMcp: intent.needsMcp,
-    candidateProviderKeys: intent.candidateProviderKeys,
-  };
+  try {
+    const intent = IntentSchema.parse(rawOutput);
+    return {
+      taskSummary: intent.taskSummary,
+      needsMcp: intent.needsMcp,
+      candidateProviderKeys: intent.candidateProviderKeys,
+    };
+  } catch (err) {
+    if (!(err instanceof z.ZodError)) throw err;
+    return {
+      needsMcp: false,
+      plannerWarnings: [
+        `[intent] structured output did not match the required schema ` +
+          `(${summarizeZodIssues(err)}); proceeding to design with static specs only.`,
+      ],
+    };
+  }
 }

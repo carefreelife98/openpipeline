@@ -72,13 +72,14 @@ export interface PlannerState {
   needsMcp?: boolean;
   /** `intent`'s hint of which MCP provider keys are likely relevant — informational, not enforced by `select`. */
   candidateProviderKeys?: string[];
-  /** `select`'s final `mcp:<provider>:<tool>` keys that were both chosen by the model AND present in the loaded catalog. */
-  selectedMcpKeys?: string[];
   /**
    * `NodeSpec`s synthesized by `mcpNodeResolver.resolveSpec` for each of
-   * {@link selectedMcpKeys} that resolved successfully (fail-soft per key —
-   * D2). Merged with `runtime.specs` by `design`/`validate` so the design
-   * catalog and graph validation both recognize the selected MCP tools.
+   * `select`'s model-chosen, catalog-validated `mcp:<provider>:<tool>` keys
+   * that resolved successfully (fail-soft per key — D2). Merged with
+   * `runtime.specs` by `design`/`validate` so the design catalog and graph
+   * validation both recognize the selected MCP tools. Left untouched (not
+   * reset) by an empty D2b re-selection round so an earlier round's resolved
+   * specs survive (T2 review Minor 4) — see `select.node.ts`.
    */
   mcpSpecs?: NodeSpec[];
   /**
@@ -156,11 +157,6 @@ const plannerStateSpec: StateDefinition = {
   }),
 
   candidateProviderKeys: Annotation<string[] | undefined>({
-    reducer: (_existing: string[] | undefined, update: string[] | undefined) => update,
-    default: (): string[] | undefined => undefined,
-  }),
-
-  selectedMcpKeys: Annotation<string[] | undefined>({
     reducer: (_existing: string[] | undefined, update: string[] | undefined) => update,
     default: (): string[] | undefined => undefined,
   }),

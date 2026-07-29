@@ -401,14 +401,19 @@ describe('PipelinePlanner.plan — no-MCP core loop', () => {
     // result), so assert on `code`/message substrings that don't depend on
     // any particular id.
     const issues = result.unresolvedValidationErrors ?? [];
+    const realIssueIndex = issues.findIndex((issue) => issue.code === 'REF_SOURCE_MISSING');
+    const schemaIssueIndex = issues.findIndex((issue) =>
+      issue.message.includes('did not match the required schema')
+    );
     // Attempt 1's real dangling-edge defect must survive into the final
     // result...
-    expect(issues.some((issue) => issue.code === 'REF_SOURCE_MISSING')).toBe(true);
-    // ...oldest-first, alongside (not replaced by) attempt 2's schema-parse
-    // failure.
-    expect(
-      issues.some((issue) => issue.message.includes('did not match the required schema'))
-    ).toBe(true);
+    expect(realIssueIndex).toBeGreaterThanOrEqual(0);
+    // ...alongside (not replaced by) attempt 2's schema-parse failure...
+    expect(schemaIssueIndex).toBeGreaterThanOrEqual(0);
+    // ...and, per the "MERGE, oldest first" contract (T1 carried-over minor),
+    // strictly BEFORE it — a mere presence check (T2 review Minor 2) would
+    // also pass for a prepend implementation that silently reordered them.
+    expect(realIssueIndex).toBeLessThan(schemaIssueIndex);
   });
 
   it('(k) exhaustion on nothing but schema-parse failures surfaces a clear error, not a raw ZodError (T1 review round 3, M6)', async () => {

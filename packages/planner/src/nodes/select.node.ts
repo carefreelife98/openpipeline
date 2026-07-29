@@ -5,6 +5,7 @@ import type {
   NodeSpec,
   ResolvedProvider,
 } from '@openpipeline/core';
+import { z } from 'zod';
 
 import { checkAbort } from '../abort.js';
 import {
@@ -14,6 +15,7 @@ import {
   SELECT_SYSTEM_PROMPT,
 } from '../prompts.js';
 import type { PlannerRuntime } from '../runtime.js';
+import { summarizeZodIssues } from '../schema-failure.js';
 import { SelectSchema } from '../schema.js';
 import type { PlannerState } from '../state.js';
 import { asStructuredOutputModel } from '../structured-output.js';
@@ -50,6 +52,20 @@ function validKeysOf(providers: readonly ResolvedProvider[]): Set<string> {
 }
 
 /**
+ * Returns only the entries of `candidates` not already present (exact string
+ * match) in `existing` — keeps the APPEND-semantics `plannerWarnings` channel
+ * (D7) free of duplicates when a node can legitimately run more than once per
+ * `plan()` call, as `select` does on a D2b re-entry (T2 review Minor 3).
+ */
+function dedupeAgainstExisting(
+  existing: readonly string[],
+  candidates: readonly string[]
+): string[] {
+  const seen = new Set(existing);
+  return candidates.filter((candidate) => !seen.has(candidate));
+}
+
+/**
  * T2/D2's `select` node: loads the MCP catalog (cached on
  * `runtime.mcpCatalogBox` so a second entry into `select` within the same
  * `plan()` call — D2b's correct-routing extension — reuses it instead of
@@ -58,13 +74,27 @@ function validKeysOf(providers: readonly ResolvedProvider[]): Set<string> {
  *
  * Fail-soft, per D2:
  * - A selection with zero keys that are BOTH well-formed AND present in the
- *   loaded catalog ("invalid/empty") gets exactly one same-input retry. If
- *   the retry is also empty, a `plannerWarning` is appended and the run
- *   proceeds to `design` with static specs only — `mcpSpecs`/`mcpCatalogText`
- *   stay empty, never blocking the loop.
+ *   loaded catalog ("invalid/empty") gets exactly one same-input retry. This
+ *   also covers a response that fails `SelectSchema.parse` entirely (T2
+ *   review Important 1 — the most literal "invalid selection" there is;
+ *   previously an unguarded `.parse()` let a `ZodError` reject the whole
+ *   `plan()`, unlike every other fail-soft path in this package): a schema
+ *   mismatch is treated as zero valid keys for that attempt, same as an
+ *   empty/mismatched array. If the retry is also empty, a `plannerWarning`
+ *   (naming the schema failure when that's what happened) is appended and the
+ *   run proceeds to `design` with static specs only. On a D2b re-entry (this
+ *   isn't `select`'s first call this `plan()`), `mcpSpecs`/`mcpCatalogText`
+ *   are left untouched rather than reset to empty (T2 review Minor 4) — an
+ *   earlier round's resolved specs must survive an empty re-selection, or a
+ *   draft that still legitimately references one of them would fail
+ *   `validate` as an unknown key.
  * - Each individually selected key is resolved via
  *   `mcpNodeResolver.resolveSpec` in its own try/catch; a failure drops just
  *   that key (with its own `plannerWarning`), it never aborts the others.
+ * - Every `plannerWarnings` entry this node returns is deduped against
+ *   `state.plannerWarnings` first (T2 review Minor 3): `select` can run more
+ *   than once per `plan()` call (D2b), and the APPEND-semantics channel would
+ *   otherwise collect the identical message once per re-entry.
  *
  * `select` always hands off to `design` unconditionally (no conditional edge
  * needed on its outgoing side) — whether or not any MCP tool ended up
@@ -103,10 +133,23 @@ export async function selectNode(
   });
   const messages = [new SystemMessage(SELECT_SYSTEM_PROMPT), new HumanMessage(prompt)];
 
+  // T2 review Important 1: a response that fails `SelectSchema.parse` (a
+  // schema-SHAPE defect, not an empty/mismatched selection) is caught here
+  // and treated as zero valid keys for that attempt, feeding the same
+  // one-retry-then-warn fail-soft path below instead of letting a raw
+  // `ZodError` propagate out of the node and reject `plan()`. Any non-Zod
+  // error (a genuine LLM/network failure) still rethrows.
+  let lastSchemaError: z.ZodError | undefined;
   const attemptSelection = async (): Promise<string[]> => {
     const rawOutput = await structuredModel.invoke(messages);
-    const parsed = SelectSchema.parse(rawOutput);
-    return parsed.selectedKeys.filter((key) => validKeys.has(key));
+    try {
+      const parsed = SelectSchema.parse(rawOutput);
+      return parsed.selectedKeys.filter((key) => validKeys.has(key));
+    } catch (err) {
+      if (!(err instanceof z.ZodError)) throw err;
+      lastSchemaError = err;
+      return [];
+    }
   };
 
   let validSelectedKeys = await attemptSelection();
@@ -116,14 +159,21 @@ export async function selectNode(
   }
 
   if (validSelectedKeys.length === 0) {
+    // T2 review Minor 4: `state.mcpSpecs` may already hold keys resolved by
+    // an EARLIER `select` round within this same `plan()` call (D2b
+    // re-entry). Omit the keys entirely (rather than writing `[]`/`''`) so
+    // the last-write-wins `mcpSpecs`/`mcpCatalogText` channels keep whatever
+    // an earlier round resolved; only reset them on a genuine first-ever
+    // empty selection.
+    const hadPriorSpecs = (state.mcpSpecs?.length ?? 0) > 0;
+    const warning = lastSchemaError
+      ? `[select] structured output did not match the required schema after a retry ` +
+        `(${summarizeZodIssues(lastSchemaError)}); proceeding to design with static specs only.`
+      : '[select] no MCP tools were selected after a retry (empty or catalog-mismatched ' +
+        'selection both times); proceeding to design with static specs only.';
     return {
-      selectedMcpKeys: [],
-      mcpSpecs: [],
-      mcpCatalogText: '',
-      plannerWarnings: [
-        '[select] no MCP tools were selected after a retry (empty or catalog-mismatched ' +
-          'selection both times); proceeding to design with static specs only.',
-      ],
+      ...(hadPriorSpecs ? {} : { mcpSpecs: [], mcpCatalogText: '' }),
+      plannerWarnings: dedupeAgainstExisting(state.plannerWarnings, [warning]),
     };
   }
 
@@ -148,9 +198,11 @@ export async function selectNode(
   const mcpCatalog = buildSpecCatalogText(resolvedSpecs);
 
   return {
-    selectedMcpKeys: validSelectedKeys,
     mcpSpecs: resolvedSpecs,
     mcpCatalogText: mcpCatalog.text,
-    plannerWarnings: [...resolveWarnings, ...mcpCatalog.warnings],
+    plannerWarnings: dedupeAgainstExisting(state.plannerWarnings, [
+      ...resolveWarnings,
+      ...mcpCatalog.warnings,
+    ]),
   };
 }

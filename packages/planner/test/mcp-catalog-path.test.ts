@@ -135,6 +135,37 @@ describe('(a) needsMcp: false skips select entirely (D2)', () => {
     expect(catalogLoader.loadCalls).toBe(0);
     expect(mcpNodeResolver.resolveCalls).toHaveLength(0);
   });
+
+  it('a malformed (non-IntentSchema-shaped) response degrades to needsMcp: false instead of aborting the run (T2 review Minor 1)', async () => {
+    const model = new FakeChatModel([
+      { totallyUnrelated: true }, // fails IntentSchema.parse entirely
+      staticOnlyRawDraft(),
+    ]);
+    const catalogLoader = makeFakeCatalogLoader();
+    const mcpNodeResolver = makeFakeMcpNodeResolver(new Map());
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+    });
+
+    const result = await planner.plan({ instruction: 'do something' });
+
+    // plan() resolves — a schema-shape defect in `intent`'s output must not
+    // block the run any more than `needsMcp: false` does.
+    expect(result.attempts).toBe(1);
+    expect(result.draft.nodes).toHaveLength(1);
+    // Exactly 2 LLM calls (intent, design) — select was never reached, same
+    // as the explicit `needsMcp: false` case above.
+    expect(model.calls).toHaveLength(2);
+    expect(catalogLoader.loadCalls).toBe(0);
+    expect(result.plannerWarnings).toBeDefined();
+    expect(
+      result.plannerWarnings?.some((w) => w.includes('did not match the required schema'))
+    ).toBe(true);
+  });
 });
 
 describe('(b) select fail-soft: empty selection twice proceeds to design with static specs only (D2)', () => {
@@ -192,6 +223,39 @@ describe('(b) select fail-soft: empty selection twice proceeds to design with st
     expect(result.plannerWarnings?.some((w) => w.includes('no MCP tools were selected'))).toBe(
       true
     );
+  });
+
+  it('a malformed (non-SelectSchema-shaped) response is fail-soft, not a raw ZodError rejection (T2 review Important 1)', async () => {
+    const model = new FakeChatModel([
+      intentRaw(true, ['demo']),
+      { selectedKeys: 'mcp:demo:lookup' }, // wrong shape: string, not an array
+      { totallyUnrelated: true }, // same-input retry: still doesn't match SelectSchema
+      staticOnlyRawDraft(),
+    ]);
+    const catalogLoader = makeFakeCatalogLoader();
+    const mcpNodeResolver = makeFakeMcpNodeResolver(new Map());
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+    });
+
+    const result = await planner.plan({ instruction: 'maybe use a tool' });
+
+    // plan() resolves — a schema-shape defect in `select`'s output must not
+    // block the run any more than an empty/mismatched selection does.
+    expect(result.attempts).toBe(1);
+    expect(result.draft.nodes).toHaveLength(1);
+    expect(model.calls).toHaveLength(4); // intent, select x2, design
+    expect(mcpNodeResolver.resolveCalls).toHaveLength(0); // resolver never reached
+    expect(result.plannerWarnings).toBeDefined();
+    // The warning names the schema failure rather than the generic
+    // empty-selection message, so the degradation isn't invisible.
+    expect(
+      result.plannerWarnings?.some((w) => w.includes('did not match the required schema'))
+    ).toBe(true);
   });
 });
 
@@ -331,6 +395,99 @@ describe('(d) correct-routing extension: an unresolved mcp: key routes back to s
     const designEvents = events.filter((e) => e.phase === 'design');
     expect(designEvents).toHaveLength(2);
   });
+
+  it("an empty D2b re-selection preserves an earlier round's resolved mcpSpecs instead of wiping them (T2 review Minor 4)", async () => {
+    // Round 1: select resolves "mcp:demo:lookup" successfully, but design
+    // "hallucinates" a DIFFERENT, never-selected key ("mcp:demo:other") —
+    // correct routes back to select. Round 2: select comes back empty twice
+    // (fail-soft trips) — WITHOUT the fix, this would overwrite
+    // `state.mcpSpecs` with `[]`, wiping round 1's successfully-resolved
+    // "mcp:demo:lookup". Round 2's design then uses ONLY "mcp:demo:lookup"
+    // (no hallucinated key this time): if it survived, validate passes; if it
+    // was wiped, "mcp:demo:lookup" reads back as an unresolved key and the
+    // run would burn a THIRD round instead of succeeding on round 2.
+    const model = new FakeChatModel([
+      intentRaw(true, ['demo']),
+      selectRaw(['mcp:demo:lookup']), // round 1 select: resolves fine
+      unresolvedMcpKeyRawDraft(), // round 1 design: hallucinates "mcp:demo:other"
+      selectRaw([]), // round 2 select re-entry, attempt 1: empty
+      selectRaw([]), // round 2 select re-entry, same-input retry: still empty
+      { nodes: [{ id: 'n1', key: mcpGenericSpec.key, label: 'Lookup', inputs: {} }], edges: [] }, // round 2 design: only the round-1-resolved key
+    ]);
+    const catalogLoader = makeFakeCatalogLoader();
+    const mcpNodeResolver = makeFakeMcpNodeResolver(
+      new Map([[mcpGenericSpec.key, mcpGenericSpec]])
+    );
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+      maxAttempts: 3,
+    });
+
+    const result = await planner.plan({ instruction: 'do something with a tool' });
+
+    expect(result.attempts).toBe(2);
+    // Only ever resolved once (round 1) — round 2's empty selection never
+    // reaches the resolver, and round 1's resolved spec was preserved rather
+    // than re-resolved.
+    expect(mcpNodeResolver.resolveCalls).toEqual(['mcp:demo:lookup']);
+    // If mcpSpecs had been wiped, "mcp:demo:lookup" would read back as an
+    // unresolved key and this would be defined instead.
+    expect(result.unresolvedValidationErrors).toBeUndefined();
+    expect(result.draft.nodes).toHaveLength(1);
+  });
+
+  it('an identical select warning across two D2b re-entries appears only once in plannerWarnings (T2 review Minor 3)', async () => {
+    // "mcp:demo:broken" is well-formed and IN the catalog (so `select`
+    // accepts it as a "valid selected key"), but the resolver has no spec
+    // registered for it — every round's resolve failure produces the exact
+    // same warning message. The unresolved key routes `correct` back to
+    // `select` every round, so without dedup the identical message would
+    // accumulate once per round in the APPEND-semantics plannerWarnings
+    // channel.
+    const model = new FakeChatModel([
+      intentRaw(true, ['demo']),
+      selectRaw(['mcp:demo:broken']), // round 1: resolves, but resolveSpec rejects
+      { nodes: [{ id: 'n1', key: 'mcp:demo:broken', label: 'Broken', inputs: {} }], edges: [] },
+      selectRaw(['mcp:demo:broken']), // round 2 re-entry: same key, same rejection
+      { nodes: [{ id: 'n1', key: 'mcp:demo:broken', label: 'Broken', inputs: {} }], edges: [] },
+    ]);
+    const catalogLoader = makeFakeCatalogLoader([
+      {
+        key: 'demo',
+        displayName: 'Demo',
+        tools: [
+          {
+            name: 'broken',
+            description: 'always fails to resolve',
+            invoke: () => Promise.resolve({}),
+          },
+        ],
+      },
+    ]);
+    const mcpNodeResolver = makeFakeMcpNodeResolver(new Map()); // nothing registered -> always rejects
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+      maxAttempts: 2,
+    });
+
+    const result = await planner.plan({ instruction: 'do something with a tool' });
+
+    // Exhausts at maxAttempts=2 — the unresolved key is never fixed.
+    expect(result.attempts).toBe(2);
+    expect(mcpNodeResolver.resolveCalls).toEqual(['mcp:demo:broken', 'mcp:demo:broken']);
+    const matchingWarnings = (result.plannerWarnings ?? []).filter((w) =>
+      w.includes('mcp:demo:broken')
+    );
+    expect(matchingWarnings).toHaveLength(1);
+  });
 });
 
 /** A 2-node static draft whose edge dangles to a never-declared node — a non-MCP validation issue. */
@@ -452,6 +609,80 @@ describe('(e) catalog cleanup runs exactly once on every exit path (D2)', () => 
 
     await expect(planner.plan({ instruction: 'no catalog at all' })).resolves.toBeDefined();
   });
+
+  it('success path: a rejecting cleanup() still resolves with the draft, carrying a plannerWarning (T2 review Important 2)', async () => {
+    const model = new FakeChatModel([
+      intentRaw(true, ['demo']),
+      selectRaw(['mcp:demo:lookup']),
+      staticOnlyRawDraft(),
+    ]);
+    const mcpNodeResolver = makeFakeMcpNodeResolver(
+      new Map([[mcpGenericSpec.key, mcpGenericSpec]])
+    );
+    const catalogLoader = {
+      load: () =>
+        Promise.resolve({
+          providers: DEFAULT_FAKE_PROVIDERS,
+          cleanup: () => Promise.reject(new Error('cleanup boom')),
+        }),
+    };
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+    });
+
+    // Must NOT reject with the cleanup error — the completed draft is the
+    // expensive part of the run and must not be thrown away over a teardown
+    // detail.
+    const result = await planner.plan({ instruction: 'use a tool' });
+
+    expect(result.draft.nodes).toHaveLength(1);
+    expect(result.plannerWarnings).toBeDefined();
+    expect(result.plannerWarnings?.some((w) => w.toLowerCase().includes('cleanup'))).toBe(true);
+  });
+
+  it('abort path: a rejecting cleanup() does not mask PipelineAbortedError (T2 review Important 2)', async () => {
+    const model = new FakeChatModel([
+      intentRaw(true, ['demo']),
+      selectRaw(['mcp:demo:lookup']),
+      staticOnlyRawDraft(),
+    ]);
+    const mcpNodeResolver = makeFakeMcpNodeResolver(
+      new Map([[mcpGenericSpec.key, mcpGenericSpec]])
+    );
+    const catalogLoader = {
+      load: () =>
+        Promise.resolve({
+          providers: DEFAULT_FAKE_PROVIDERS,
+          cleanup: () => Promise.reject(new Error('cleanup boom')),
+        }),
+    };
+    const controller = new AbortController();
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+    });
+
+    // Without the fix, the rejecting cleanup() in `finally` REPLACES the
+    // PipelineAbortedError the `try` block threw, so the caller would see
+    // "cleanup boom" instead and any `instanceof PipelineAbortedError`
+    // handling would silently stop working.
+    await expect(
+      planner.plan({
+        instruction: 'use a tool',
+        signal: controller.signal,
+        onProgress: (event) => {
+          if (event.phase === 'select') controller.abort();
+        },
+      })
+    ).rejects.toBeInstanceOf(PipelineAbortedError);
+  });
 });
 
 describe('select prompt content (D2)', () => {
@@ -552,5 +783,48 @@ describe('select per-key resolve fail-soft (D2)', () => {
 
     expect(mcpNodeResolver.resolveCalls).toEqual(['mcp:demo:lookup', 'mcp:demo:broken']);
     expect(result.plannerWarnings?.some((w) => w.includes('mcp:demo:broken'))).toBe(true);
+  });
+});
+
+describe('(f) catalog-path exhaustion: an unresolved mcp: key persists across every attempt (T2 review Minor 5)', () => {
+  it('never throws, exhausts at maxAttempts with unresolvedValidationErrors populated instead of an opaque GraphRecursionError', async () => {
+    // Every design attempt references "mcp:demo:other", which is never
+    // selected/resolved — correct routes back to select on round 1, select
+    // resolves the SAME (irrelevant) "mcp:demo:lookup" key again, design
+    // repeats the same unresolved-key mistake, and maxAttempts=2 is spent
+    // without ever validating cleanly. Locks two catalog-path-only
+    // mechanisms simultaneously: correctNode's exhaustion branch clearing a
+    // previous round's correctTarget: 'select' back to undefined, and the
+    // widened recursionLimit budget (maxAttempts*4+3) actually covering a
+    // round that spends every one of its 4 super-steps.
+    const model = new FakeChatModel([
+      intentRaw(true, ['demo']),
+      selectRaw(['mcp:demo:lookup']),
+      unresolvedMcpKeyRawDraft(),
+      selectRaw(['mcp:demo:lookup']), // re-entry after correct routes to select
+      unresolvedMcpKeyRawDraft(), // still references the never-selected key
+    ]);
+    const catalogLoader = makeFakeCatalogLoader();
+    const mcpNodeResolver = makeFakeMcpNodeResolver(
+      new Map([[mcpGenericSpec.key, mcpGenericSpec]])
+    );
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+      maxAttempts: 2,
+    });
+
+    const result = await planner.plan({ instruction: 'do something with a tool' });
+
+    expect(result.attempts).toBe(2);
+    expect(result.unresolvedValidationErrors).toBeDefined();
+    expect(result.unresolvedValidationErrors?.length ?? 0).toBeGreaterThan(0);
+    expect(result.draft).toBeDefined();
+    // Both design attempts + both select entries actually ran — the run was
+    // not silently truncated by the recursion budget.
+    expect(model.calls).toHaveLength(5);
   });
 });

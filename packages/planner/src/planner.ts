@@ -19,8 +19,14 @@ const DEFAULT_TEMPERATURE = 0.3;
  * Narrows a compiled planner graph's `unknown` `.invoke()` output to
  * {@link PlannerState} — mirrors `@openpipeline/runtime`'s `readFinalState`:
  * a real runtime guard (checking a discriminating field), not a blind cast.
+ * Exported (not just used internally) so `state.test.ts` can narrow the same
+ * `StateGraph(PlannerStateAnnotation).invoke()` erasure the same way, rather
+ * than reaching for an unsound `as PlannerState`/`as unknown as PlannerState`
+ * cast that would silently paper over a real structural mismatch (T2 review
+ * Minor 6 / gate hole — this is exactly the kind of test-only type gap that
+ * `tsconfig.test.json` now catches).
  */
-function readPlannerState(output: unknown): PlannerState {
+export function readPlannerState(output: unknown): PlannerState {
   if (output !== null && typeof output === 'object' && 'instruction' in output) {
     return output as PlannerState;
   }
@@ -281,6 +287,16 @@ export class PipelinePlanner {
     const superStepsPerRound = catalogPathActive ? 4 : 3;
     const recursionLimitSlack = catalogPathActive ? 3 : 2;
     let finalState: PlannerState;
+    // T2 review Important 2: a `cleanup()` rejection must never replace the
+    // `try` block's own outcome — per JS semantics an unguarded `await` in a
+    // `finally` throws and REPLACES whatever the `try` produced, silently
+    // discarding a completed draft on the success path or masking
+    // `PipelineAbortedError`/a genuine LLM failure on the failure path (the
+    // package's own tests, and callers, rely on `err instanceof
+    // PipelineAbortedError` still working). Declared outside the try/finally
+    // so it survives into the success-path result below; stays `undefined`
+    // whenever cleanup either never ran or succeeded.
+    let cleanupWarning: string | undefined;
     try {
       const rawOutput: unknown = await app.invoke(
         { instruction: request.instruction, plannerWarnings: catalog.warnings },
@@ -299,7 +315,21 @@ export class PipelinePlanner {
       // A no-op on the no-MCP path and on any run where `select` never ran
       // (`needsMcp: false`, or `catalogLoader`/`mcpNodeResolver` weren't
       // configured) — `.loaded` is `undefined` in both cases.
-      await runtime.mcpCatalogBox.loaded?.cleanup();
+      //
+      // Its OWN try/catch (T2 review Important 2): a rejecting `cleanup()`
+      // (e.g. an MCP transport whose socket the server already closed) is
+      // never silent (always `logger.warn`) but also never allowed to
+      // propagate out of this `finally` — see the doc comment above.
+      try {
+        await runtime.mcpCatalogBox.loaded?.cleanup();
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `[PipelinePlanner] MCP catalog cleanup() failed after plan() settled: ${reason}`,
+          err
+        );
+        cleanupWarning = `[planner] MCP catalog cleanup failed after the run completed: ${reason}`;
+      }
     }
 
     if (!finalState.draft) {
@@ -316,13 +346,20 @@ export class PipelinePlanner {
       throw new Error('[PipelinePlanner] planning finished with no draft produced.');
     }
 
+    // T2 review Important 2: surface a rejecting cleanup() on the success
+    // path as a warning rather than silently swallowing it (it was already
+    // logged via `logger.warn` above) — appended after `finalState`'s own
+    // warnings, never replacing them.
+    const plannerWarnings = cleanupWarning
+      ? [...finalState.plannerWarnings, cleanupWarning]
+      : finalState.plannerWarnings;
+
     return {
       draft: finalState.draft,
       attempts: finalState.attempts,
       unresolvedValidationErrors:
         finalState.validationIssues.length > 0 ? finalState.validationIssues : undefined,
-      plannerWarnings:
-        finalState.plannerWarnings.length > 0 ? finalState.plannerWarnings : undefined,
+      plannerWarnings: plannerWarnings.length > 0 ? plannerWarnings : undefined,
     };
   }
 }
