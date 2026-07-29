@@ -120,6 +120,8 @@ describe('validateNode — unknown spec key (D2 draft->graph conversion)', () =>
       specs: testSpecs,
       catalog: { text: '', warnings: [] },
       logger: NOOP_LOGGER,
+      context: {},
+      mcpCatalogBox: {},
     };
     const state: PlannerState = {
       instruction: 'x',
@@ -152,6 +154,8 @@ describe('validateNode — unknown spec key (D2 draft->graph conversion)', () =>
       specs: testSpecs,
       catalog: { text: '', warnings: [] },
       logger: NOOP_LOGGER,
+      context: {},
+      mcpCatalogBox: {},
     };
     const state: PlannerState = {
       instruction: 'x',

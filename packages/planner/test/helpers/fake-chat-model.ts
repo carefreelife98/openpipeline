@@ -49,8 +49,54 @@ export class FakeChatModel {
   }
 }
 
-export function makeLlmFactory(model: FakeChatModel): LlmFactory {
+/** Structural shape both {@link FakeChatModel} and {@link ThrowingAfterNCallsChatModel} satisfy. */
+export interface StructuredOutputFake {
+  withStructuredOutput(
+    schema: z.ZodType,
+    config?: { method?: string }
+  ): { invoke(input: unknown): Promise<unknown> };
+}
+
+export function makeLlmFactory(model: StructuredOutputFake): LlmFactory {
   return {
     createModel: () => model,
   };
+}
+
+/**
+ * A fake that answers the first `succeedForCalls` structured-output calls
+ * from `responses` (same call-order semantics as {@link FakeChatModel}: index
+ * repeats the last response once exhausted), then REJECTS every call after
+ * that with `failure` — simulating a genuine LLM/network failure partway
+ * through a multi-node run (e.g. `intent`/`select` succeed, then `design`
+ * fails). Used by cleanup-guarantee tests (T2/D2) that need `plan()` to
+ * actually throw mid-run, after some earlier node has already had a
+ * side-effect (e.g. `select` populating `runtime.mcpCatalogBox`) worth
+ * asserting cleanup still ran for.
+ */
+export class ThrowingAfterNCallsChatModel {
+  readonly calls: StructuredCallRecord[] = [];
+  private callIndex = 0;
+
+  constructor(
+    private readonly responses: readonly unknown[],
+    private readonly succeedForCalls: number,
+    private readonly failure: Error
+  ) {}
+
+  withStructuredOutput(
+    _schema: z.ZodType,
+    config?: { method?: string }
+  ): { invoke(input: unknown): Promise<unknown> } {
+    return {
+      invoke: (input: unknown): Promise<unknown> => {
+        const index = this.callIndex;
+        this.callIndex += 1;
+        this.calls.push({ method: config?.method, messages: input as BaseMessage[] });
+        if (index >= this.succeedForCalls) return Promise.reject(this.failure);
+        const responseIndex = Math.min(index, this.responses.length - 1);
+        return Promise.resolve(this.responses[responseIndex]);
+      },
+    };
+  }
 }

@@ -1,7 +1,5 @@
-import { HumanMessage } from '@langchain/core/messages';
 import { NOOP_LOGGER, PipelineAbortedError } from '@openpipeline/core';
 import { describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
 
 import { designNode } from '../src/nodes/design.node.js';
 import { PipelinePlanner } from '../src/planner.js';
@@ -12,6 +10,7 @@ import type { PlannerProgressEvent } from '../src/types.js';
 
 import { FakeChatModel, makeLlmFactory } from './helpers/fake-chat-model.js';
 import { echoSpec, shoutSpec, testSpecs, unconvertibleSpec } from './helpers/fixtures.js';
+import { findHumanMessageText } from './helpers/messages.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Unanchored counterpart of UUID_RE for "must not contain a UUID anywhere in
@@ -105,16 +104,6 @@ function stubSequentialUuids(): {
       spy.mockRestore();
     },
   };
-}
-
-function findHumanMessageText(messages: readonly unknown[]): string {
-  const human = messages.find((m) => m instanceof HumanMessage);
-  if (!human) throw new Error('test fixture bug: no HumanMessage found in captured call');
-  const { content } = human as HumanMessage;
-  if (typeof content !== 'string') {
-    throw new Error('test fixture bug: expected HumanMessage content to be a plain string');
-  }
-  return content;
 }
 
 describe('PipelinePlanner.plan — no-MCP core loop', () => {
@@ -380,6 +369,48 @@ describe('PipelinePlanner.plan — no-MCP core loop', () => {
     expect(secondPrompt).toContain('did not match the required schema');
   });
 
+  it("(j2) danglingEdge -> malformed sequence: a later schema-parse failure MERGES onto the prior attempt's real validationIssues instead of replacing them (T2 carried-over T1 minor)", async () => {
+    // Attempt 1 produces a REAL structural defect (dangling edge to "n3");
+    // attempt 2's structured output then fails PlannerDraftSchema.parse
+    // entirely. Before the carried-over fix, design.node.ts's schema-parse
+    // catch branch returned `validationIssues: [{...}]` (a fresh array
+    // containing ONLY this attempt's schema-shape complaint), silently
+    // dropping attempt 1's genuine dangling-edge issue the instant a LATER
+    // attempt merely failed to parse — even though the underlying structural
+    // defect was never actually fixed.
+    const model = new FakeChatModel([danglingEdgeRawDraft(), malformedRawDraft()]);
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      maxAttempts: 2,
+    });
+
+    const result = await planner.plan({ instruction: 'Echo some text, then shout it.' });
+
+    expect(result.attempts).toBe(2);
+    expect(model.calls).toHaveLength(2);
+    // No PlannerDraft was ever produced on attempt 2, so the run still
+    // returns attempt 1's (invalid) draft — never throws, matching the
+    // exhaustion shape test (c)/(k) exercise elsewhere.
+    expect(result.draft.nodes).toHaveLength(2);
+
+    // `result.unresolvedValidationErrors` is `finalState.validationIssues`
+    // verbatim — UUID-based (short-id rewriting only ever happens for the
+    // NEXT design prompt via `buildDesignFeedback`, never for the returned
+    // result), so assert on `code`/message substrings that don't depend on
+    // any particular id.
+    const issues = result.unresolvedValidationErrors ?? [];
+    // Attempt 1's real dangling-edge defect must survive into the final
+    // result...
+    expect(issues.some((issue) => issue.code === 'REF_SOURCE_MISSING')).toBe(true);
+    // ...oldest-first, alongside (not replaced by) attempt 2's schema-parse
+    // failure.
+    expect(
+      issues.some((issue) => issue.message.includes('did not match the required schema'))
+    ).toBe(true);
+  });
+
   it('(k) exhaustion on nothing but schema-parse failures surfaces a clear error, not a raw ZodError (T1 review round 3, M6)', async () => {
     const model = new FakeChatModel([malformedRawDraft()]); // repeats — never parses
     const planner = new PipelinePlanner({
@@ -389,9 +420,14 @@ describe('PipelinePlanner.plan — no-MCP core loop', () => {
       maxAttempts: 2,
     });
 
-    await expect(
-      planner.plan({ instruction: 'Echo some text, then shout it.' })
-    ).rejects.not.toBeInstanceOf(z.ZodError);
+    // T2 carried-over T1 minor (b): `.rejects.not.toBeInstanceOf(z.ZodError)`
+    // is satisfied by ANY non-ZodError rejection (including an unrelated bug
+    // throwing a completely different error) — too weak to actually prove
+    // `plan()` surfaces the documented exhaustion message. Assert the exact
+    // message instead.
+    await expect(planner.plan({ instruction: 'Echo some text, then shout it.' })).rejects.toThrow(
+      /planning finished with no draft produced/
+    );
     expect(model.calls).toHaveLength(2);
   });
 });
@@ -408,7 +444,7 @@ describe('PipelinePlanner — constructor guards', () => {
     ).toThrow(/modelId is required/);
   });
 
-  it('throws synchronously when catalogLoader is supplied (no-MCP path only in this build)', () => {
+  it('throws synchronously when only catalogLoader is supplied (T2: catalogLoader/mcpNodeResolver must be provided together)', () => {
     expect(
       () =>
         new PipelinePlanner({
@@ -419,7 +455,38 @@ describe('PipelinePlanner — constructor guards', () => {
             load: () => Promise.resolve({ providers: [], cleanup: () => Promise.resolve() }),
           },
         })
-    ).toThrow(/catalogLoader/);
+    ).toThrow(/catalogLoader and mcpNodeResolver must be provided together/);
+  });
+
+  it('throws synchronously when only mcpNodeResolver is supplied (T2: catalogLoader/mcpNodeResolver must be provided together)', () => {
+    expect(
+      () =>
+        new PipelinePlanner({
+          llmFactory: makeLlmFactory(new FakeChatModel([validRawDraft()])),
+          modelId: 'test-model',
+          specs: testSpecs,
+          mcpNodeResolver: {
+            resolveSpec: () => Promise.reject(new Error('should never be called')),
+          },
+        })
+    ).toThrow(/catalogLoader and mcpNodeResolver must be provided together/);
+  });
+
+  it('does not throw when both catalogLoader and mcpNodeResolver are supplied together (T2)', () => {
+    expect(
+      () =>
+        new PipelinePlanner({
+          llmFactory: makeLlmFactory(new FakeChatModel([validRawDraft()])),
+          modelId: 'test-model',
+          specs: testSpecs,
+          catalogLoader: {
+            load: () => Promise.resolve({ providers: [], cleanup: () => Promise.resolve() }),
+          },
+          mcpNodeResolver: {
+            resolveSpec: () => Promise.reject(new Error('should never be called')),
+          },
+        })
+    ).not.toThrow();
   });
 
   // T1 review round 3, I1-R3: `maxAttempts` used to flow unvalidated straight
@@ -487,6 +554,8 @@ describe('design node — idMap stability across attempts (D4)', () => {
       specs: testSpecs,
       catalog: buildSpecCatalogText(testSpecs),
       logger: NOOP_LOGGER,
+      context: {},
+      mcpCatalogBox: {},
     };
 
     const state1: PlannerState = {
