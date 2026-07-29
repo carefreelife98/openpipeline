@@ -1,3 +1,4 @@
+import { OutputParserException } from '@langchain/core/output_parsers';
 import { PipelineAbortedError } from '@openpipeline/core';
 import { describe, expect, it } from 'vitest';
 
@@ -11,6 +12,7 @@ import {
 } from './helpers/fake-catalog.js';
 import {
   FakeChatModel,
+  InvokeRejectingChatModel,
   ThrowingAfterNCallsChatModel,
   makeLlmFactory,
 } from './helpers/fake-chat-model.js';
@@ -167,6 +169,33 @@ describe('(a) needsMcp: false skips select entirely (D2)', () => {
       result.plannerWarnings?.some((w) => w.includes('did not match the required schema'))
     ).toBe(true);
   });
+
+  it("intent's invoke() rejecting with an OutputParserException (a provider functionCalling adapter validating INSIDE invoke) degrades to needsMcp: false too, not just a resolving invoke() whose output fails .parse() (T3 review llm-robustness #1)", async () => {
+    const model = new InvokeRejectingChatModel([
+      new OutputParserException('Failed to parse. Text: "{}"'),
+      staticOnlyRawDraft(),
+    ]);
+    const catalogLoader = makeFakeCatalogLoader();
+    const mcpNodeResolver = makeFakeMcpNodeResolver(new Map());
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+    });
+
+    const result = await planner.plan({ instruction: 'do something' });
+
+    expect(result.attempts).toBe(1);
+    expect(result.draft.nodes).toHaveLength(1);
+    expect(model.calls).toHaveLength(2); // intent, design — select never reached
+    expect(catalogLoader.loadCalls).toBe(0);
+    expect(result.plannerWarnings).toBeDefined();
+    expect(
+      result.plannerWarnings?.some((w) => w.includes('did not match the required schema'))
+    ).toBe(true);
+  });
 });
 
 describe('(b) select fail-soft: empty selection twice proceeds to design with static specs only (D2)', () => {
@@ -257,6 +286,55 @@ describe('(b) select fail-soft: empty selection twice proceeds to design with st
     expect(
       result.plannerWarnings?.some((w) => w.includes('did not match the required schema'))
     ).toBe(true);
+  });
+
+  it("select's invoke() rejecting with an OutputParserException on both attempts (a provider functionCalling adapter validating INSIDE invoke) is fail-soft too, not just a resolving invoke() whose output fails .parse() (T3 review llm-robustness #1)", async () => {
+    const model = new InvokeRejectingChatModel([
+      intentRaw(true, ['demo']),
+      new OutputParserException('Failed to parse. Text: "{}"'), // first attempt
+      new OutputParserException('Failed to parse. Text: "{}"'), // same-input retry
+      staticOnlyRawDraft(),
+    ]);
+    const catalogLoader = makeFakeCatalogLoader();
+    const mcpNodeResolver = makeFakeMcpNodeResolver(new Map());
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+    });
+
+    const result = await planner.plan({ instruction: 'maybe use a tool' });
+
+    expect(result.attempts).toBe(1);
+    expect(result.draft.nodes).toHaveLength(1);
+    expect(model.calls).toHaveLength(4); // intent, select x2, design
+    expect(mcpNodeResolver.resolveCalls).toHaveLength(0); // resolver never reached
+    expect(result.plannerWarnings).toBeDefined();
+    expect(
+      result.plannerWarnings?.some((w) => w.includes('did not match the required schema'))
+    ).toBe(true);
+  });
+
+  it("a genuine (non-schema) error rejecting select's invoke() still rejects plan(), not swallowed as fail-soft (T3 review llm-robustness #1)", async () => {
+    const model = new InvokeRejectingChatModel([
+      intentRaw(true, ['demo']),
+      new Error('simulated network failure'),
+    ]);
+    const catalogLoader = makeFakeCatalogLoader();
+    const mcpNodeResolver = makeFakeMcpNodeResolver(new Map());
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+    });
+
+    await expect(planner.plan({ instruction: 'maybe use a tool' })).rejects.toThrow(
+      'simulated network failure'
+    );
   });
 });
 
@@ -356,6 +434,52 @@ describe('(d) correct-routing extension: an unresolved mcp: key routes back to s
 
     // The catalog is only ever loaded once per plan() call, even across the two `select` entries.
     expect(catalogLoader.loadCalls).toBe(1);
+  });
+
+  it("a D2b re-entry's select prompt names the specific unresolved key and the already-resolved key, instead of re-issuing the first call's byte-identical prompt (T3 review llm-robustness #2)", async () => {
+    const model = new FakeChatModel([
+      intentRaw(true, ['demo']),
+      selectRaw(['mcp:demo:lookup']), // round 1 select: resolves fine
+      unresolvedMcpKeyRawDraft(), // round 1 design: hallucinates "mcp:demo:other"
+      selectRaw(['mcp:demo:lookup']), // round 2 re-entry
+      staticOnlyRawDraft(), // round 2 design: behaves this time
+    ]);
+    const catalogLoader = makeFakeCatalogLoader();
+    const mcpNodeResolver = makeFakeMcpNodeResolver(
+      new Map([[mcpGenericSpec.key, mcpGenericSpec]])
+    );
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+      maxAttempts: 3,
+    });
+
+    await planner.plan({ instruction: 'do something with a tool' });
+
+    // model.calls: [0]=intent, [1]=select (round 1), [2]=design (round 1),
+    // [3]=select (round 2 re-entry), [4]=design (round 2) — matches the
+    // sibling test above's `model.calls` length-5 assertion.
+    const firstSelectPrompt = findHumanMessageText(model.calls[1]?.messages ?? []);
+    const secondSelectPrompt = findHumanMessageText(model.calls[3]?.messages ?? []);
+
+    // The first call (never a re-entry) has no correction section at all.
+    expect(firstSelectPrompt).not.toContain('This is a correction');
+
+    // The re-entry names the hallucinated, never-resolved key...
+    expect(secondSelectPrompt).toContain('This is a correction');
+    expect(secondSelectPrompt).toContain('mcp:demo:other');
+    // ...and the already-resolved key from round 1, so the model knows it
+    // doesn't need to re-select it.
+    expect(secondSelectPrompt).toContain('mcp:demo:lookup');
+
+    // The defining regression this locks: round 2's prompt must not be a
+    // byte-identical re-roll of round 1's (the bug this fixes — a
+    // temperature-only re-roll was previously the ONLY thing that could
+    // change the model's answer).
+    expect(secondSelectPrompt).not.toBe(firstSelectPrompt);
   });
 
   it('routes to design (not select) for a validation issue unrelated to an mcp: key, even when select DID run this plan()', async () => {

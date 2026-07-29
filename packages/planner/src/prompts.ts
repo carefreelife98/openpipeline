@@ -140,15 +140,59 @@ export function buildMcpCatalogText(providers: readonly ResolvedProvider[]): str
   return blocks.join('\n');
 }
 
+/**
+ * D2b re-entry context (T3 review llm-robustness #2): populated only when
+ * this `select` call is a `correct`-routed re-entry — an earlier round's
+ * draft referenced an `mcp:` key that never resolved to a spec, so `correct`
+ * routed back to `select` instead of `design` for "another chance to pick a
+ * different tool" (see `correct.node.ts`). Without this, `buildSelectPrompt`
+ * produces the exact same prompt on every re-entry (byte-identical to the
+ * first call whenever `instruction`/`taskSummary`/`catalogText` are all
+ * unchanged, which they always are here — a temperature-only re-roll, not an
+ * actual second chance).
+ */
+export interface SelectReentryContext {
+  /** Key(s) the previous draft referenced but that never resolved to a spec — must be dropped or replaced. */
+  unresolvedKeys: readonly string[];
+  /** Key(s) already resolved by an earlier round this `plan()` call — still available, no need to re-select. */
+  resolvedKeys: readonly string[];
+}
+
 export interface SelectPromptParams {
   instruction: string;
   taskSummary?: string;
   catalogText: string;
+  /** Omit for `select`'s first call this `plan()`; see {@link SelectReentryContext}. */
+  reentry?: SelectReentryContext;
 }
 
 export function buildSelectPrompt(params: SelectPromptParams): string {
   const sections = [`User instruction:\n${params.instruction}`];
   if (params.taskSummary) sections.push(`\nTask summary:\n${params.taskSummary}`);
+  if (params.reentry) {
+    const { unresolvedKeys, resolvedKeys } = params.reentry;
+    const reentryLines = [
+      '\nThis is a correction: the previous draft referenced one or more MCP tool keys that were ' +
+        'never actually selected and resolved, so validation failed.',
+    ];
+    if (unresolvedKeys.length > 0) {
+      reentryLines.push(
+        `- These key(s) do NOT resolve to a real tool — do not reference them again: ` +
+          unresolvedKeys.join(', ')
+      );
+    }
+    if (resolvedKeys.length > 0) {
+      reentryLines.push(
+        `- These key(s) are already resolved and available to the design step without ` +
+          `re-selecting them: ${resolvedKeys.join(', ')}`
+      );
+    }
+    reentryLines.push(
+      'Pick the correct key(s) from the catalog below, copied EXACTLY, or return an empty array ' +
+        'if none of them are actually needed.'
+    );
+    sections.push(reentryLines.join('\n'));
+  }
   sections.push(`\nAvailable MCP tools:\n${params.catalogText || '(none)'}`);
   sections.push(
     '\nReturn the "mcp:<provider>:<tool>" keys you need, copied EXACTLY from the catalog above. ' +

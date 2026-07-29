@@ -5,10 +5,9 @@ import type {
   NodeSpec,
   ResolvedProvider,
 } from '@openpipeline/core';
-import { z } from 'zod';
 
 import { checkAbort } from '../abort.js';
-import { mergeResolvedMcpSpecs } from '../mcp-routing.js';
+import { mergeResolvedMcpSpecs, unresolvedMcpKeysFromIssues } from '../mcp-routing.js';
 import {
   buildMcpCatalogText,
   buildSelectPrompt,
@@ -16,7 +15,11 @@ import {
   SELECT_SYSTEM_PROMPT,
 } from '../prompts.js';
 import type { PlannerRuntime } from '../runtime.js';
-import { summarizeZodIssues } from '../schema-failure.js';
+import {
+  classifyStructuredOutputError,
+  describeStructuredOutputFailure,
+  type StructuredOutputSchemaFailure,
+} from '../schema-failure.js';
 import { SelectSchema } from '../schema.js';
 import type { PlannerState } from '../state.js';
 import { asStructuredOutputModel } from '../structured-output.js';
@@ -105,6 +108,15 @@ function dedupeAgainstExisting(
  *   `state.plannerWarnings` first (T2 review Minor 3): `select` can run more
  *   than once per `plan()` call (D2b), and the APPEND-semantics channel would
  *   otherwise collect the identical message once per re-entry.
+ * - A D2b re-entry (`state.validationIssues`/`state.draft` name an
+ *   unresolved `mcp:` key — the same condition `correct.node.ts` used to
+ *   route back here) is no longer a byte-identical re-roll of the first
+ *   call's prompt (T3 review llm-robustness #2): `buildSelectPrompt` gets an
+ *   extra re-entry section naming the specific key(s) that didn't resolve
+ *   (must be dropped or replaced) and the key(s) already resolved by an
+ *   earlier round (still available, no need to re-select), so a
+ *   temperature-only re-roll is no longer the ONLY thing that can change the
+ *   model's answer.
  *
  * `select` always hands off to `design` unconditionally (no conditional edge
  * needed on its outgoing side) — whether or not any MCP tool ended up
@@ -129,11 +141,23 @@ export async function selectNode(
   const catalog = runtime.mcpCatalogBox.loaded;
   const validKeys = validKeysOf(catalog.providers);
 
+  // T3 review llm-robustness #2: `unresolvedKeys` is non-empty exactly when
+  // this call is a D2b re-entry (`correct.node.ts` routed here because
+  // `issuesReferenceUnresolvedMcpKey(state.validationIssues, state.draft)`
+  // was true — same inputs, same predicate, just the actual key list instead
+  // of a boolean) — first-ever calls this `plan()` always have an empty
+  // `state.validationIssues`/`undefined` `state.draft`, so `reentry` is
+  // correctly omitted for them.
+  const unresolvedKeys = unresolvedMcpKeysFromIssues(state.validationIssues, state.draft);
+  const alreadyResolvedKeys = (state.mcpSpecs ?? []).map((spec) => spec.key);
+
   const catalogText = buildMcpCatalogText(catalog.providers);
   const prompt = buildSelectPrompt({
     instruction: state.instruction,
     taskSummary: state.taskSummary,
     catalogText,
+    reentry:
+      unresolvedKeys.length > 0 ? { unresolvedKeys, resolvedKeys: alreadyResolvedKeys } : undefined,
   });
   const rawModel = runtime.llmFactory.createModel(runtime.modelId, {
     temperature: runtime.temperature,
@@ -143,21 +167,26 @@ export async function selectNode(
   });
   const messages = [new SystemMessage(SELECT_SYSTEM_PROMPT), new HumanMessage(prompt)];
 
-  // T2 review Important 1: a response that fails `SelectSchema.parse` (a
-  // schema-SHAPE defect, not an empty/mismatched selection) is caught here
-  // and treated as zero valid keys for that attempt, feeding the same
-  // one-retry-then-warn fail-soft path below instead of letting a raw
-  // `ZodError` propagate out of the node and reject `plan()`. Any non-Zod
-  // error (a genuine LLM/network failure) still rethrows.
-  let lastSchemaError: z.ZodError | undefined;
+  // T2 review Important 1 / T3 review llm-robustness #1: a call that fails
+  // schema validation — either `SelectSchema.parse` throwing (a schema-SHAPE
+  // defect, not an empty/mismatched selection) or `structuredModel.invoke`
+  // itself rejecting with an `OutputParserException` (a provider
+  // `functionCalling` adapter validates its own zod schema INSIDE `invoke` —
+  // see `design.node.ts`'s matching comment) — is caught here (a single
+  // `try` spans both) and treated as zero valid keys for that attempt,
+  // feeding the same one-retry-then-warn fail-soft path below instead of
+  // letting the raw error propagate out of the node and reject `plan()`. Any
+  // other error (a genuine LLM/network failure) still rethrows.
+  let lastSchemaFailure: StructuredOutputSchemaFailure | undefined;
   const attemptSelection = async (): Promise<string[]> => {
-    const rawOutput = await structuredModel.invoke(messages);
     try {
+      const rawOutput = await structuredModel.invoke(messages);
       const parsed = SelectSchema.parse(rawOutput);
       return parsed.selectedKeys.filter((key) => validKeys.has(key));
     } catch (err) {
-      if (!(err instanceof z.ZodError)) throw err;
-      lastSchemaError = err;
+      const failure = classifyStructuredOutputError(err);
+      if (!failure) throw err;
+      lastSchemaFailure = failure;
       return [];
     }
   };
@@ -176,9 +205,9 @@ export async function selectNode(
     // an earlier round resolved; only reset them on a genuine first-ever
     // empty selection.
     const hadPriorSpecs = (state.mcpSpecs?.length ?? 0) > 0;
-    const warning = lastSchemaError
+    const warning = lastSchemaFailure
       ? `[select] structured output did not match the required schema after a retry ` +
-        `(${summarizeZodIssues(lastSchemaError)}); proceeding to design with static specs only.`
+        `(${describeStructuredOutputFailure(lastSchemaFailure)}); proceeding to design with static specs only.`
       : '[select] no MCP tools were selected after a retry (empty or catalog-mismatched ' +
         'selection both times); proceeding to design with static specs only.';
     return {

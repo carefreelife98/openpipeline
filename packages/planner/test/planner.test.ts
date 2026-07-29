@@ -1,3 +1,4 @@
+import { OutputParserException } from '@langchain/core/output_parsers';
 import { NOOP_LOGGER, PipelineAbortedError } from '@openpipeline/core';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -8,7 +9,11 @@ import type { PlannerRuntime } from '../src/runtime.js';
 import type { PlannerState } from '../src/state.js';
 import type { PlannerProgressEvent } from '../src/types.js';
 
-import { FakeChatModel, makeLlmFactory } from './helpers/fake-chat-model.js';
+import {
+  FakeChatModel,
+  InvokeRejectingChatModel,
+  makeLlmFactory,
+} from './helpers/fake-chat-model.js';
 import { echoSpec, shoutSpec, testSpecs, unconvertibleSpec } from './helpers/fixtures.js';
 import { findHumanMessageText } from './helpers/messages.js';
 
@@ -434,6 +439,41 @@ describe('PipelinePlanner.plan — no-MCP core loop', () => {
       /planning finished with no draft produced/
     );
     expect(model.calls).toHaveLength(2);
+  });
+
+  it("(l) a design invoke() rejecting with an OutputParserException (a provider functionCalling adapter validating INSIDE invoke, e.g. ChatOpenAI's JsonOutputKeyToolsParser._validateResult) consumes an attempt instead of aborting the run, same as PlannerDraftSchema.parse failing (T3 review llm-robustness #1)", async () => {
+    const model = new InvokeRejectingChatModel([
+      new OutputParserException('Failed to parse. Text: "{}"'),
+      validRawDraft(),
+    ]);
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+    });
+
+    const result = await planner.plan({ instruction: 'Echo some text, then shout it.' });
+
+    expect(result.attempts).toBe(2);
+    expect(result.unresolvedValidationErrors).toBeUndefined();
+    expect(result.draft.nodes).toHaveLength(2);
+    expect(model.calls).toHaveLength(2);
+    const secondPrompt = findHumanMessageText(model.calls[1]?.messages ?? []);
+    expect(secondPrompt).toContain('did not match the required schema');
+  });
+
+  it("(m) a genuine (non-schema) error rejecting design's invoke() still rejects plan() — proves the classification actually discriminates rather than swallowing everything (T3 review llm-robustness #1)", async () => {
+    const model = new InvokeRejectingChatModel([new Error('simulated network failure')]);
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+    });
+
+    await expect(planner.plan({ instruction: 'Echo some text, then shout it.' })).rejects.toThrow(
+      'simulated network failure'
+    );
+    expect(model.calls).toHaveLength(1);
   });
 });
 

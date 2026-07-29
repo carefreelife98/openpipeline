@@ -1,10 +1,12 @@
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
-import { z } from 'zod';
 
 import { checkAbort } from '../abort.js';
 import { buildIntentPrompt, INTENT_SYSTEM_PROMPT } from '../prompts.js';
 import type { PlannerRuntime } from '../runtime.js';
-import { summarizeZodIssues } from '../schema-failure.js';
+import {
+  classifyStructuredOutputError,
+  describeStructuredOutputFailure,
+} from '../schema-failure.js';
 import { IntentSchema } from '../schema.js';
 import type { PlannerState } from '../state.js';
 import { asStructuredOutputModel } from '../structured-output.js';
@@ -19,15 +21,19 @@ import { asStructuredOutputModel } from '../structured-output.js';
  * Runs once per `plan()` call, not once per correction attempt — `correct`
  * never routes back here (only `design`/`select` — see `correct.node.ts`), so
  * there is no retry loop to consider. If the model's structured output fails
- * `IntentSchema.parse` (a schema-SHAPE defect), this does NOT abort `plan()`
- * (T2 review Important 1 / Minor 1: real models do return off-schema
- * structured output — the same assumption T1 review round 3, M6 already
- * rejected for `design`, and Important 1 extends to `select`). It's caught
- * here and degrades to `needsMcp: false` with a `plannerWarning` naming the
- * schema failure — `routeAfterIntent` then sends the run straight to `design`
- * with static specs only, the same non-blocking degradation `select`'s own
- * fail-soft path uses. Only a non-Zod error (a genuine LLM/network failure)
- * still rejects `plan()`.
+ * schema validation — either `IntentSchema.parse` throwing (a schema-SHAPE
+ * defect) or `structuredModel.invoke(messages)` itself rejecting with an
+ * `OutputParserException` (a provider `functionCalling` override validates
+ * its own zod schema INSIDE `invoke` — T3 review llm-robustness #1) — this
+ * does NOT abort `plan()` (T2 review Important 1 / Minor 1: real models do
+ * return off-schema structured output — the same assumption T1 review round
+ * 3, M6 already rejected for `design`, and Important 1 extends to `select`).
+ * Both shapes are caught here (a single `try` spans `invoke` AND `.parse`)
+ * and degrade to `needsMcp: false` with a `plannerWarning` naming the schema
+ * failure — `routeAfterIntent` then sends the run straight to `design` with
+ * static specs only, the same non-blocking degradation `select`'s own
+ * fail-soft path uses. Any other error (a genuine LLM/network failure) still
+ * rejects `plan()`.
  */
 export async function intentNode(
   state: PlannerState,
@@ -46,9 +52,12 @@ export async function intentNode(
 
   const prompt = buildIntentPrompt({ instruction: state.instruction });
   const messages = [new SystemMessage(INTENT_SYSTEM_PROMPT), new HumanMessage(prompt)];
-  const rawOutput = await structuredModel.invoke(messages);
 
   try {
+    // T3 review llm-robustness #1: `invoke` is inside this `try` too, not
+    // just `IntentSchema.parse` — see `design.node.ts`'s matching comment for
+    // why a provider `functionCalling` adapter can reject `invoke` itself.
+    const rawOutput = await structuredModel.invoke(messages);
     const intent = IntentSchema.parse(rawOutput);
     return {
       taskSummary: intent.taskSummary,
@@ -56,12 +65,13 @@ export async function intentNode(
       candidateProviderKeys: intent.candidateProviderKeys,
     };
   } catch (err) {
-    if (!(err instanceof z.ZodError)) throw err;
+    const failure = classifyStructuredOutputError(err);
+    if (!failure) throw err;
     return {
       needsMcp: false,
       plannerWarnings: [
         `[intent] structured output did not match the required schema ` +
-          `(${summarizeZodIssues(err)}); proceeding to design with static specs only.`,
+          `(${describeStructuredOutputFailure(failure)}); proceeding to design with static specs only.`,
       ],
     };
   }

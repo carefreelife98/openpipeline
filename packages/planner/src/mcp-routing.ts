@@ -53,13 +53,46 @@ export function mergeResolvedMcpSpecs(
 }
 
 /**
- * D2b's correct-routing extension: does any validation issue reference a
- * node whose `key` is an `mcp:<provider>:<tool>` key that never resolved to a
- * spec? Detected structurally from `draft.nodes` (never by parsing an issue's
+ * Returns the distinct `mcp:<provider>:<tool>` keys referenced by `issues`
+ * via a `NODE_TYPE_MISMATCH`-flagged node that never resolved to a spec.
+ * Detected structurally from `draft.nodes` (never by parsing an issue's
  * `message` text, which is a rendering detail, not a stable signal) — every
  * `NODE_TYPE_MISMATCH` issue `validate.node.ts` produces for an unresolved
  * key carries that node's persisted id in `nodeId`, so cross-referencing
  * `draft.nodes` recovers the original `key` reliably.
+ *
+ * `NODE_TYPE_MISMATCH` is also reused for the unrelated "duplicate short id"
+ * check (T1 review round 3, M5); if that duplicate happens to land on a node
+ * whose key starts with `mcp:`, it's included here too — see
+ * {@link issuesReferenceUnresolvedMcpKey}'s doc comment for why that's
+ * harmless.
+ *
+ * Shared by `correct.node.ts` (via {@link issuesReferenceUnresolvedMcpKey}'s
+ * boolean) and `select.node.ts`'s D2b re-entry prompt (T3 review
+ * llm-robustness #2), which needs the actual key list — not just whether one
+ * exists — to name the offending key(s) in the re-selection prompt instead of
+ * re-issuing a byte-identical one.
+ */
+export function unresolvedMcpKeysFromIssues(
+  issues: readonly GraphValidationIssue[],
+  draft: PipelineDraft | undefined
+): string[] {
+  if (!draft) return [];
+  const nodesById = new Map(draft.nodes.map((node) => [node.id, node] as const));
+  const keys = new Set<string>();
+  for (const issue of issues) {
+    if (issue.code !== 'NODE_TYPE_MISMATCH' || issue.nodeId === undefined) continue;
+    const node = nodesById.get(issue.nodeId);
+    if (node !== undefined && node.key.startsWith('mcp:')) keys.add(node.key);
+  }
+  return [...keys];
+}
+
+/**
+ * D2b's correct-routing extension: does any validation issue reference a
+ * node whose `key` is an `mcp:<provider>:<tool>` key that never resolved to a
+ * spec? A thin boolean wrapper over {@link unresolvedMcpKeysFromIssues} — see
+ * its doc comment for the detection details.
  *
  * `NODE_TYPE_MISMATCH` is also reused for the unrelated "duplicate short id"
  * check (T1 review round 3, M5); if that duplicate happens to land on a node
@@ -73,11 +106,5 @@ export function issuesReferenceUnresolvedMcpKey(
   issues: readonly GraphValidationIssue[],
   draft: PipelineDraft | undefined
 ): boolean {
-  if (!draft) return false;
-  const nodesById = new Map(draft.nodes.map((node) => [node.id, node] as const));
-  return issues.some((issue) => {
-    if (issue.code !== 'NODE_TYPE_MISMATCH' || issue.nodeId === undefined) return false;
-    const node = nodesById.get(issue.nodeId);
-    return node !== undefined && node.key.startsWith('mcp:');
-  });
+  return unresolvedMcpKeysFromIssues(issues, draft).length > 0;
 }

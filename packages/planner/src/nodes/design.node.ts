@@ -6,7 +6,6 @@ import type {
   PipelineEdgeRow,
   PipelineNodeRow,
 } from '@openpipeline/core';
-import { z } from 'zod';
 
 import { checkAbort } from '../abort.js';
 import { applyAutoFill } from '../auto-fill.js';
@@ -15,7 +14,11 @@ import { computeLayeredPositions } from '../layout.js';
 import { mergeSpecs } from '../mcp-routing.js';
 import { buildDesignPrompt, DESIGN_SYSTEM_PROMPT } from '../prompts.js';
 import type { PlannerRuntime } from '../runtime.js';
-import { summarizeZodIssues } from '../schema-failure.js';
+import {
+  classifyStructuredOutputError,
+  describeStructuredOutputFailure,
+  type StructuredOutputSchemaFailure,
+} from '../schema-failure.js';
 import { PlannerDraftSchema, type PlannerDraft, type PlannerDraftNode } from '../schema.js';
 import type { PlannerState } from '../state.js';
 import { asStructuredOutputModel } from '../structured-output.js';
@@ -58,12 +61,12 @@ function remapInputs(inputs: PlannerDraftNode['inputs'], idAssignment: IdAssignm
 }
 
 /**
- * Renders a `PlannerDraftSchema.parse` failure into a short, model-readable
- * feedback sentence (T1 review round 3, M6) built around
- * {@link summarizeZodIssues}'s shared issue summary.
+ * Renders a classified structured-output schema failure into a short,
+ * model-readable feedback sentence (T1 review round 3, M6) built around
+ * {@link describeStructuredOutputFailure}'s shared summary.
  */
-function describeSchemaFailure(err: z.ZodError): string {
-  return `your previous response did not match the required schema: ${summarizeZodIssues(err)}`;
+function describeSchemaFailure(failure: StructuredOutputSchemaFailure): string {
+  return `your previous response did not match the required schema: ${describeStructuredOutputFailure(failure)}`;
 }
 
 /**
@@ -74,15 +77,22 @@ function describeSchemaFailure(err: z.ZodError): string {
  * (D5), compute advisory layered positions (D6), and produce the
  * `@openpipeline/core` `PipelineDraft` the rest of the loop validates.
  *
- * If the model's structured output fails `PlannerDraftSchema.parse` (a
- * schema-SHAPE defect — the adapter handed back something that only loosely
- * matches), this no longer aborts `plan()` with a raw `ZodError` (T1 review
- * round 3, M6): it's caught here and converted into `state.designError` +
+ * If the model's structured output fails schema validation — either
+ * `PlannerDraftSchema.parse(rawOutput)` throwing (a schema-SHAPE defect: the
+ * adapter resolved with something that only loosely matches) or
+ * `structuredModel.invoke(messages)` itself rejecting with an
+ * `OutputParserException` (a provider `functionCalling` override, e.g.
+ * `ChatOpenAI`, validates its own zod schema INSIDE `invoke` — T3 review
+ * llm-robustness #1) — this no longer aborts `plan()` with a raw error (T1
+ * review round 3, M6; extended to the `invoke`-rejects shape in T3): both are
+ * caught here (a single `try` spans `invoke` AND `.parse`, so neither shape
+ * escapes uncaught) and converted into `state.designError` +
  * `state.validationIssues`, which routes straight to `correct` (skipping
  * `validate` — there is no `PlannerDraft` to build a graph from) and consumes
  * an attempt exactly like a graph-level defect does. Only exhausting every
  * attempt on nothing but parse failures still surfaces as an error — see
- * `planner.ts`'s `readPlannerState`/`draft` check.
+ * `planner.ts`'s `readPlannerState`/`draft` check. Any other error (a genuine
+ * LLM/network failure) still rethrows.
  */
 export async function designNode(
   state: PlannerState,
@@ -126,17 +136,23 @@ export async function designNode(
   );
 
   const messages = [new SystemMessage(DESIGN_SYSTEM_PROMPT), new HumanMessage(prompt)];
-  const rawOutput = await structuredModel.invoke(messages);
 
   let plannerDraft: PlannerDraft;
   try {
+    // T3 review llm-robustness #1: `invoke` is inside this `try` too, not
+    // just the defensive `.parse()` re-validation below — a real provider
+    // `functionCalling` adapter can reject `invoke` itself with a
+    // schema-validation error; it must not bypass this fail-soft path just
+    // because it never reaches `rawOutput`/`.parse()` at all.
+    const rawOutput = await structuredModel.invoke(messages);
     // Defensive re-validation: a structured-output adapter (real or fake) can
     // still hand back a shape that only loosely matches — surface a loud
     // ZodError rather than silently trusting `rawOutput`.
     plannerDraft = PlannerDraftSchema.parse(rawOutput);
   } catch (err) {
-    if (!(err instanceof z.ZodError)) throw err;
-    const message = describeSchemaFailure(err);
+    const failure = classifyStructuredOutputError(err);
+    if (!failure) throw err;
+    const message = describeSchemaFailure(failure);
     return {
       designError: message,
       // MERGE onto `state.validationIssues`, never replace it (T1 carried-over

@@ -100,3 +100,47 @@ export class ThrowingAfterNCallsChatModel {
     };
   }
 }
+
+/**
+ * Simulates a provider `functionCalling` adapter (e.g. `ChatOpenAI`, via
+ * `@langchain/core`'s `JsonOutputKeyToolsParser._validateResult`) that
+ * validates its own zod schema INSIDE `invoke` and REJECTS the call outright
+ * — as opposed to {@link FakeChatModel}, which always RESOLVES `invoke` and
+ * can therefore only ever exercise the base "raw `toolCall.args`,
+ * unvalidated" adapter shape this package's own `<Schema>.parse(rawOutput)`
+ * defensive re-validation catches. Exists to prove every node's
+ * schema-failure classification also covers a REJECTING `invoke()` (T3
+ * review llm-robustness #1), not just a resolving one `.parse()` later
+ * rejects.
+ *
+ * `responses[i]` is either a canned structured-output payload (that call
+ * resolves with it) or an `Error` instance — including, but not limited to,
+ * an `OutputParserException` — that call rejects with it instead. Same
+ * call-order / last-entry-repeats semantics as {@link FakeChatModel}.
+ */
+export class InvokeRejectingChatModel {
+  readonly calls: StructuredCallRecord[] = [];
+  private callIndex = 0;
+
+  constructor(private readonly responses: readonly unknown[]) {
+    if (responses.length === 0) {
+      throw new Error('InvokeRejectingChatModel requires at least one canned response');
+    }
+  }
+
+  withStructuredOutput(
+    _schema: z.ZodType,
+    config?: { method?: string }
+  ): { invoke(input: unknown): Promise<unknown> } {
+    return {
+      invoke: (input: unknown): Promise<unknown> => {
+        const index = Math.min(this.callIndex, this.responses.length - 1);
+        this.callIndex += 1;
+        this.calls.push({ method: config?.method, messages: input as BaseMessage[] });
+        const entry = this.responses[index];
+        if (entry instanceof Error) return Promise.reject(entry);
+        return Promise.resolve(entry);
+      },
+    };
+  }
+}

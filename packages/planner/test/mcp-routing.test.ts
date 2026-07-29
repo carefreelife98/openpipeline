@@ -2,7 +2,11 @@ import type { PipelineDraft } from '@openpipeline/core';
 import type { GraphValidationIssue } from '@openpipeline/nodes';
 import { describe, expect, it } from 'vitest';
 
-import { issuesReferenceUnresolvedMcpKey, mergeSpecs } from '../src/mcp-routing.js';
+import {
+  issuesReferenceUnresolvedMcpKey,
+  mergeSpecs,
+  unresolvedMcpKeysFromIssues,
+} from '../src/mcp-routing.js';
 
 import { echoSpec, mcpGenericSpec, shoutSpec } from './helpers/fixtures.js';
 
@@ -111,5 +115,70 @@ describe('issuesReferenceUnresolvedMcpKey (D2b)', () => {
       { id: 'n2', key: 'tool.echo' },
     ]);
     expect(issuesReferenceUnresolvedMcpKey(issues, draft)).toBe(true);
+  });
+});
+
+describe('unresolvedMcpKeysFromIssues (T3 review llm-robustness #2)', () => {
+  it('returns [] when there is no draft (nothing to cross-reference)', () => {
+    expect(
+      unresolvedMcpKeysFromIssues(
+        [{ code: 'NODE_TYPE_MISMATCH', nodeId: 'n1', message: 'x' }],
+        undefined
+      )
+    ).toEqual([]);
+  });
+
+  it('returns [] when there are no issues', () => {
+    expect(
+      unresolvedMcpKeysFromIssues([], draftWith([{ id: 'n1', key: 'mcp:demo:lookup' }]))
+    ).toEqual([]);
+  });
+
+  it('returns [] when the referenced node key is not an mcp: key', () => {
+    const issues: GraphValidationIssue[] = [
+      { code: 'NODE_TYPE_MISMATCH', nodeId: 'n1', message: 'x' },
+    ];
+    expect(
+      unresolvedMcpKeysFromIssues(issues, draftWith([{ id: 'n1', key: 'tool.nonexistent' }]))
+    ).toEqual([]);
+  });
+
+  it('returns the referenced key for a single NODE_TYPE_MISMATCH issue naming an unresolved mcp: key', () => {
+    const issues: GraphValidationIssue[] = [
+      { code: 'NODE_TYPE_MISMATCH', nodeId: 'n1', message: 'x' },
+    ];
+    expect(
+      unresolvedMcpKeysFromIssues(issues, draftWith([{ id: 'n1', key: 'mcp:demo:other' }]))
+    ).toEqual(['mcp:demo:other']);
+  });
+
+  it('collects distinct keys across multiple offending nodes, deduped when two nodes happen to share the same key', () => {
+    const issues: GraphValidationIssue[] = [
+      { code: 'NODE_TYPE_MISMATCH', nodeId: 'n1', message: 'x' },
+      { code: 'NODE_TYPE_MISMATCH', nodeId: 'n2', message: 'y' },
+      { code: 'NODE_TYPE_MISMATCH', nodeId: 'n3', message: 'z' },
+    ];
+    const draft = draftWith([
+      { id: 'n1', key: 'mcp:demo:other' },
+      { id: 'n2', key: 'mcp:demo:ghost' },
+      { id: 'n3', key: 'mcp:demo:other' },
+    ]);
+    expect(unresolvedMcpKeysFromIssues(issues, draft)).toEqual([
+      'mcp:demo:other',
+      'mcp:demo:ghost',
+    ]);
+  });
+
+  it('stays in lockstep with issuesReferenceUnresolvedMcpKey (shared implementation): non-empty key list iff the boolean is true', () => {
+    const draft = draftWith([{ id: 'n1', key: 'mcp:demo:other' }]);
+    const issues: GraphValidationIssue[] = [
+      { code: 'NODE_TYPE_MISMATCH', nodeId: 'n1', message: 'x' },
+    ];
+    expect(issuesReferenceUnresolvedMcpKey(issues, draft)).toBe(
+      unresolvedMcpKeysFromIssues(issues, draft).length > 0
+    );
+    expect(issuesReferenceUnresolvedMcpKey([], draft)).toBe(
+      unresolvedMcpKeysFromIssues([], draft).length > 0
+    );
   });
 });
