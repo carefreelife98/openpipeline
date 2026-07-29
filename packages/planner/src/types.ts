@@ -23,10 +23,11 @@ export interface PipelinePlannerOptions {
   modelId: string;
   specs: PlannerSpecsInput;
   /**
-   * MCP tool selection (intent -> select -> design routing). NOT implemented
-   * in this build: the planner only supports the no-catalog, static-specs-only
-   * path. Passing either option throws synchronously from the constructor —
-   * see {@link PipelinePlanner}'s doc comment for the tracked follow-up.
+   * MCP tool selection (T2 — an `intent -> select` step ahead of `design`).
+   * Opt-in: MUST be provided together with {@link mcpNodeResolver} (the
+   * constructor throws synchronously if only one of the two is supplied — see
+   * {@link PipelinePlanner}'s doc comment). Omitting both keeps the exact
+   * no-MCP `design -> validate -> correct` loop.
    */
   catalogLoader?: CatalogLoader;
   mcpNodeResolver?: McpNodeResolver;
@@ -45,12 +46,12 @@ export interface PipelinePlannerOptions {
 export interface PlanRequest {
   instruction: string;
   /**
-   * Reserved for the MCP-catalog path (T2 — `catalogLoader`/`mcpNodeResolver`
-   * loading a live tool catalog for the `intent -> select` routing D2
-   * describes). Accepted here already so `PlanRequest`'s shape doesn't need a
-   * breaking change once T2 lands, but **not read anywhere in this build**:
-   * the no-MCP design/validate/correct loop has no catalog to load and no use
-   * for it (T1 review round 3, M3).
+   * Passed through to `catalogLoader.load(context)` and
+   * `mcpNodeResolver.resolveSpec(key, context)` on the MCP-catalog path (T2 —
+   * see {@link PipelinePlannerOptions.catalogLoader}). Defaults to `{}` when
+   * omitted. Never read on the no-MCP path — the no-catalog
+   * design/validate/correct loop has no catalog to load and no use for it
+   * (T1 review round 3, M3).
    */
   context?: RunContext;
   signal?: AbortSignal;

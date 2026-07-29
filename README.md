@@ -87,6 +87,32 @@ pnpm install && pnpm build && pnpm example
   per-node steps, and tracks cost. Conditional `IF` nodes route to a `true`/`false`
   branch.
 
+## Plan pipelines from natural language
+
+`@openpipeline/planner` turns an instruction into a validated `PipelineDraft` via an LLM-driven `design -> validate -> correct` loop over LangGraph — the result is ready to hand straight to `PipelineEngine.save()`:
+
+```ts
+import { PipelinePlanner } from '@openpipeline/planner';
+import { PipelineEngine } from '@openpipeline/runtime';
+
+const planner = new PipelinePlanner({
+  llmFactory,
+  modelId: 'gpt-4o',
+  specs: () => registry.list(), // a NodeSpecRegistry from @openpipeline/nodes
+});
+
+const { draft, attempts, unresolvedValidationErrors } = await planner.plan({
+  instruction: 'Fetch the latest release notes and summarize them.',
+});
+
+const pipelineId = await engine.save(draft);
+const { runId, done } = await engine.run({ pipelineId });
+```
+
+The model proposes short-id nodes/edges, `@openpipeline/nodes`'s `validateGraph` checks the draft, and failures are fed back to the model for up to `maxAttempts` correction rounds. Deterministic auto-fill wires an unmapped required slot to its single predecessor when the shape is unambiguous; anything the loop can't resolve on its own surfaces in `unresolvedValidationErrors`/`plannerWarnings` instead of being silently dropped. MCP tool selection (`catalogLoader` + `mcpNodeResolver`, an `intent -> select` step ahead of `design`) is opt-in.
+
+See [`packages/planner`](./packages/planner) for the full API (including the MCP path) and [`examples/planner-quickstart`](./examples/planner-quickstart) for a complete, runnable version of this instruction -> `plan()` -> `save()` -> `run()` flow (deterministic, zero API keys).
+
 ## Packages
 
 | Package                                                 | Responsibility                                                                                                                                                     |

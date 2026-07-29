@@ -51,7 +51,7 @@ same locally.
 | `pnpm format:check`             | Prettier — formatting is owned by Prettier, not ESLint.                                                                   |
 | `pnpm build` / `pnpm typecheck` | 9/9 packages.                                                                                                             |
 | `pnpm test:ci`                  | Vitest + per-package coverage thresholds (a regression floor — don't lower it to pass).                                   |
-| example smokes                  | `quickstart`/`mcp`/`prisma`/`server` run to `SUCCESS`; `playground` builds.                                               |
+| example smokes                  | `quickstart`/`planner-quickstart`/`mcp`/`prisma`/`server` run to `SUCCESS`; `playground` builds.                          |
 
 Run them all locally before pushing:
 
