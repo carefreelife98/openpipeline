@@ -85,6 +85,31 @@ importers:
         specifier: ^22.20.0
         version: 22.20.0
 
+  examples/planner-quickstart:
+    dependencies:
+      '@openpipeline/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@openpipeline/nodes':
+        specifier: workspace:*
+        version: link:../../packages/nodes
+      '@openpipeline/planner':
+        specifier: workspace:*
+        version: link:../../packages/planner
+      '@openpipeline/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
+      '@openpipeline/store-memory':
+        specifier: workspace:*
+        version: link:../../packages/store-memory
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.0
+
   examples/playground:
     dependencies:
       '@dagrejs/dagre':
