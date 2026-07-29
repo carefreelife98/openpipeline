@@ -1,6 +1,6 @@
 # Releasing OpenPipeline
 
-The 8 `@openpipeline/*` packages are published together, in lockstep, at the same
+The 9 `@openpipeline/*` packages are published together, in lockstep, at the same
 version (currently `0.2.x`). Internal dependencies use `workspace:*`, which **pnpm
 rewrites to the exact published version** at pack time. A bare `npm pack`/`npm
 publish` run directly against a workspace `package.json` does **not** do this
@@ -20,7 +20,7 @@ publish` as its upload command.
 2. Keep `workspace:*` in source — do not hand-edit to `^0.2.0`. pnpm handles it.
 3. Publish in dependency order (leaf-first) so each dependent's rewritten pins
    already resolve on the registry:
-   `core → nodes → mcp → store-memory → store-prisma → react → runtime → server`.
+   `core → nodes → planner → mcp → store-memory → store-prisma → react → runtime → server`.
 4. CI's `publish-guard` job (`.github/workflows/ci.yml`) asserts no packed tarball
    contains the `workspace:` protocol — it runs on every push/PR to `main`,
    independent of releasing.
@@ -36,7 +36,7 @@ long-lived token or an interactive OTP prompt.
 pnpm install --frozen-lockfile
 pnpm build && pnpm typecheck && pnpm lint && pnpm format:check && pnpm test:ci && pnpm example
 
-# 2. Bump all 8 packages to the new version, in lockstep, e.g. 0.2.1
+# 2. Bump all 9 packages to the new version, in lockstep, e.g. 0.2.1
 #    (edit each packages/*/package.json "version", or use a script)
 
 # 3. Commit the bump
@@ -58,7 +58,7 @@ Pushing the tag runs two jobs on GitHub Actions:
   tarball, leaf-first, authenticated via OIDC. No npm token, no OTP, no
   `secrets:` usage anywhere in the workflow.
 
-**One-time prerequisite:** each of the 8 packages must have Trusted Publishing
+**One-time prerequisite:** each of the 9 packages must have Trusted Publishing
 configured on npmjs.com _before_ the first tag-triggered release — see
 [`docs/trusted-publishing-setup.md`](docs/trusted-publishing-setup.md) for the
 step-by-step setup and verification.
@@ -82,7 +82,7 @@ uses a classic npm token/OTP, exactly like before this pipeline existed.
 pnpm install --frozen-lockfile
 pnpm build && pnpm typecheck && pnpm lint && pnpm format:check && pnpm test:ci && pnpm example
 
-# 2. Bump all 8 packages to the new version (lockstep), e.g. 0.2.1
+# 2. Bump all 9 packages to the new version (lockstep), e.g. 0.2.1
 #    (edit each packages/*/package.json "version", or use a script)
 
 # 3. Dry-run pack and inspect one tarball
@@ -93,7 +93,7 @@ tar -xzOf /tmp/owf/openpipeline-runtime-*.tgz package/package.json   # deps must
 pnpm -r --filter ./packages/* publish
 
 #    Manual leaf-first order, if publishing package-by-package by hand:
-#    core -> nodes -> mcp -> store-memory -> store-prisma -> react -> runtime -> server
+#    core -> nodes -> planner -> mcp -> store-memory -> store-prisma -> react -> runtime -> server
 
 # 5. Verify on the registry
 npm view @openpipeline/runtime version
@@ -126,12 +126,12 @@ requirement of the pipeline for exactly this reason — see the `if [ ! -f
 
 ## Not yet adopted (deferred)
 
-- **Changesets / semantic-release** — overkill while all 8 move in lockstep. Adopt
+- **Changesets / semantic-release** — overkill while all 9 move in lockstep. Adopt
   once versions diverge.
 - **Dual ESM/CJS** — packages are intentionally ESM-only (`type: module`). Revisit
   if a CJS-only consumer needs it.
 - **GitHub Environment gating on the `publish` job** — Trusted Publishing is
-  currently configured with a blank environment for all 8 packages (see
+  currently configured with a blank environment for all 9 packages (see
   `docs/trusted-publishing-setup.md`). Adding a required-reviewers GitHub
   Environment is a reasonable future hardening step, but requires updating
   both `release.yml` (`environment:` key on the `publish` job) and every

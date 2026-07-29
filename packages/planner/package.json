@@ -1,0 +1,56 @@
+{
+  "name": "@openpipeline/planner",
+  "version": "0.4.0",
+  "description": "Natural-language pipeline planner for OpenPipeline: an LLM-driven design -> validate -> correct loop over LangGraph that produces a valid PipelineDraft.",
+  "license": "MIT",
+  "author": "carefreelife98",
+  "homepage": "https://github.com/carefreelife98/openpipeline/tree/main/packages/planner#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carefreelife98/openpipeline.git",
+    "directory": "packages/planner"
+  },
+  "bugs": {
+    "url": "https://github.com/carefreelife98/openpipeline/issues"
+  },
+  "keywords": [
+    "pipeline",
+    "langgraph",
+    "planner",
+    "llm",
+    "dag"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit"
+  },
+  "dependencies": {
+    "@openpipeline/core": "workspace:*",
+    "@openpipeline/nodes": "workspace:*",
+    "@langchain/langgraph": "^1.4.0"
+  },
+  "peerDependencies": {
+    "@langchain/core": "^1.1.48",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@langchain/core": "^1.2.0",
+    "zod": "^4.4.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

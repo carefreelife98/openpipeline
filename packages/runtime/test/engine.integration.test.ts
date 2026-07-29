@@ -1,6 +1,11 @@
 import { getEventListeners } from 'node:events';
 
-import { defineNode, PipelineNotFoundError, type PipelineEvent } from '@openpipeline/core';
+import {
+  defineNode,
+  PipelineNotFoundError,
+  type NodeLifecycleEvent,
+  type PipelineEvent,
+} from '@openpipeline/core';
 import { createIfNodeSpec, createLlmInvokeNodeSpec } from '@openpipeline/nodes';
 import { MemoryStore } from '@openpipeline/store-memory';
 import { describe, it, expect, vi } from 'vitest';
@@ -543,7 +548,12 @@ describe('PipelineEngine end-to-end', () => {
     expect(result.status).toBe('FAILED');
     expect(kinds).toContain('NODE_FAILED');
     expect(kinds.indexOf('NODE_FAILED')).toBeLessThan(kinds.indexOf('RUN_COMPLETE'));
-    const failedEvent = events.find((e) => e.kind === 'NODE_FAILED');
+    // A plain `(e) => e.kind === 'NODE_FAILED'` predicate doesn't narrow
+    // `PipelineEvent`'s union for `.find()` (it isn't a type guard), so
+    // `failedEvent.nodeId` wouldn't type-check — `LlmChunkEvent`/
+    // `RunCompleteEvent` have no `nodeId`. An explicit `e is NodeLifecycleEvent`
+    // predicate narrows for real instead of reaching for a cast.
+    const failedEvent = events.find((e): e is NodeLifecycleEvent => e.kind === 'NODE_FAILED');
     expect(failedEvent?.nodeId).toBe('boom');
   });
 

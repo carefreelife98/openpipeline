@@ -2,7 +2,7 @@ name: Release
 
 # Trusted Publishing (OIDC) release pipeline.
 #
-# Trigger: pushing a tag matching v* (e.g. v0.2.1) after the 8
+# Trigger: pushing a tag matching v* (e.g. v0.2.1) after the 9
 # @openpipeline/* packages have already been bumped to that version in
 # lockstep and the bump commit has been merged to main. See RELEASING.md.
 #
@@ -95,7 +95,7 @@ jobs:
     needs: verify-gate
     runs-on: ubuntu-latest
     # No `environment:` key here by default -- the npm Trusted Publisher
-    # config for all 8 packages is set up with a blank environment (see
+    # config for all 9 packages is set up with a blank environment (see
     # docs/trusted-publishing-setup.md). If a maintainer later scopes
     # publishing to a GitHub Environment (e.g. for required reviewers),
     # add `environment: <name>` here AND update every package's Trusted
@@ -181,9 +181,10 @@ jobs:
           # Leaf-first order: every package is published only after all of
           # its @openpipeline/* internal deps are already on the registry.
           #   nodes, mcp, store-memory, store-prisma, react -> depend on core
+          #   planner                                        -> depends on core, nodes
           #   runtime                                        -> depends on core, nodes
           #   server                                          -> depends on core, runtime
-          ORDER=(core nodes mcp store-memory store-prisma react runtime server)
+          ORDER=(core nodes planner mcp store-memory store-prisma react runtime server)
 
           # Guard against ORDER silently drifting out of sync with what was
           # actually packed (e.g. a new packages/<name> added without

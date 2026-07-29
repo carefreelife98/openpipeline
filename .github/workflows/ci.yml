@@ -29,6 +29,8 @@ jobs:
         run: pnpm test:ci
       - name: Run quickstart kernel (no secrets, no DB)
         run: pnpm example
+      - name: Run planner quickstart (no secrets, deterministic fake LLM)
+        run: pnpm example:planner
 
   quality:
     runs-on: ubuntu-latest

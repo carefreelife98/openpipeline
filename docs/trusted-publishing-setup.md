@@ -1,7 +1,7 @@
 # npm Trusted Publishing setup (one-time, per package)
 
 This is a **one-time** manual setup a maintainer performs in the npm web UI for
-each of the 8 `@openpipeline/*` packages. Once done, `.github/workflows/release.yml`
+each of the 9 `@openpipeline/*` packages. Once done, `.github/workflows/release.yml`
 can publish new versions with zero npm tokens, zero secrets, and zero manual OTP
 entry — GitHub Actions and npm authenticate each other via OIDC.
 
@@ -18,18 +18,19 @@ Reference: [Trusted publishing for npm packages](https://docs.npmjs.com/trusted-
 - This only needs to be done **once per package**. It does not need to be
   repeated per release, per tag, or when the package version bumps.
 
-## The 8 packages
+## The 9 packages
 
 Repeat the steps below for each of:
 
 1. `@openpipeline/core`
 2. `@openpipeline/nodes`
-3. `@openpipeline/mcp`
-4. `@openpipeline/store-memory`
-5. `@openpipeline/store-prisma`
-6. `@openpipeline/react`
-7. `@openpipeline/runtime`
-8. `@openpipeline/server`
+3. `@openpipeline/planner`
+4. `@openpipeline/mcp`
+5. `@openpipeline/store-memory`
+6. `@openpipeline/store-prisma`
+7. `@openpipeline/react`
+8. `@openpipeline/runtime`
+9. `@openpipeline/server`
 
 > If a package has never been published before (first-ever publish), npm still
 > lets you configure a Trusted Publisher up front for the *scoped package
@@ -70,7 +71,7 @@ Repeat the steps below for each of:
    `npm publish`; leaving `npm stage publish` checked as well grants a
    publish capability this pipeline never uses and doesn't need.
 6. Save.
-7. Repeat for the remaining 7 packages. (npm's UI as of this writing does not
+7. Repeat for the remaining 8 packages. (npm's UI as of this writing does not
    offer a bulk-apply action across scoped packages in one form submission —
    each package's Trusted Publisher entry must be added individually. If npm
    later ships bulk configuration for trusted publishers, prefer it — but
@@ -78,7 +79,7 @@ Repeat the steps below for each of:
 
 ## Verification
 
-After configuring all 8 packages:
+After configuring all 9 packages:
 
 1. On each package's Settings page, confirm the Trusted Publisher section now
    shows:
@@ -102,7 +103,7 @@ After configuring all 8 packages:
    Publishing is configured correctly on the npm side.
 3. Do a real end-to-end test with a throwaway pre-release tag once, before
    relying on this for a real release:
-   - Bump all 8 `packages/*/package.json` versions to something like
+   - Bump all 9 `packages/*/package.json` versions to something like
      `0.2.1-tp-test.0` (lockstep).
    - Commit, tag `v0.2.1-tp-test.0`, push the tag.
    - Watch the `release.yml` run in the Actions tab: `verify-gate` should go
@@ -125,7 +126,7 @@ After configuring all 8 packages:
 
 ## After Trusted Publishing is configured: revoke old tokens
 
-Once all 8 packages have a working Trusted Publisher and step 3's smoke test
+Once all 9 packages have a working Trusted Publisher and step 3's smoke test
 has gone green:
 
 1. Go to `https://www.npmjs.com/settings/<your-username>/tokens` (Access

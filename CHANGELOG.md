@@ -3,10 +3,72 @@
 All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-All 8 `@openpipeline/*` packages (`core`, `nodes`, `runtime`, `mcp`,
+All 9 `@openpipeline/*` packages (`core`, `nodes`, `planner`, `runtime`, `mcp`,
 `store-memory`, `store-prisma`, `react`, `server`) are versioned in
 **lockstep** — one version number for the whole set, published together (see
 [RELEASING.md](./RELEASING.md)).
+
+## [Unreleased]
+
+### Added (`@openpipeline/planner`)
+
+- **New package.** Natural-language pipeline planner: an LLM-driven,
+  **5-node LangGraph loop** (`intent -> select -> design -> validate ->
+correct`) that turns an instruction plus a `NodeSpec` catalog into a valid
+  `@openpipeline/core` `PipelineDraft` — short-id-based LLM output remapped
+  to stable UUIDs across correction rounds (survives a reused short id
+  turning into the same persisted id), **deterministic auto-fill** for
+  generic-unknown-output MCP specs (wires an unmapped required slot to its
+  single predecessor when the shape is unambiguous — never a silent guess
+  when it isn't), and a simple layered advisory layout (no `dagre`
+  dependency). Two paths through the same compiled graph:
+  - **No-MCP (static specs only), the default.** Omitting
+    `catalogLoader`/`mcpNodeResolver` runs the original 3-super-step
+    `design -> validate -> correct` loop against the `NodeSpec`s passed to
+    the constructor — `intent`/`select` aren't even added to the compiled
+    graph on this path.
+  - **MCP tool selection (`intent -> select`), opt-in.** Passing
+    `catalogLoader` and `mcpNodeResolver` together (both are required — the
+    constructor throws if only one is supplied) enables a catalog-gated
+    `intent -> select` path ahead of `design`: `intent` decides whether the
+    instruction needs an MCP tool at all (`needsMcp: false` skips `select`'s
+    catalog load and LLM call entirely), `select` picks
+    `mcp:<provider>:<tool>` keys from the loaded catalog and resolves each
+    one independently, and a correction-loop validation error naming an
+    unresolved `mcp:` key routes back to `select` instead of `design` so the
+    model gets another chance. A `select` re-entry within the same `plan()`
+    call always merges with (never replaces) an earlier round's resolved
+    specs, keyed by spec key. The loaded catalog's `cleanup()` runs exactly
+    once per `plan()` call, on every exit path (success, failure, or abort).
+  - **Fail-soft everywhere, never a silent drop.** A malformed structured
+    output from `intent`/`select`/`design` degrades (one same-input retry for
+    `select`; straight to `correct`, skipping `validate`, for `design`)
+    instead of rejecting `plan()` outright; a `select` resolution failure
+    drops only that one key, never the others. Every degradation is recorded
+    in `plannerWarnings` (D7 — appended across the whole run, never
+    overwritten), and the loop only surfaces an error when it exhausts every
+    attempt with no draft ever produced at all — an exhausted-but-drafted run
+    still resolves normally, with `unresolvedValidationErrors` set instead of
+    a throw.
+- **`examples/planner-quickstart`** demonstrates the full
+  instruction -> `plan()` -> `engine.save()` -> `engine.run()` flow end to
+  end, deterministically and with zero API keys (a bundled minimal fake
+  structured-output model); the root and `packages/planner` READMEs link to
+  it and cover the real-LLM/MCP-path setup.
+
+### Development (no package behavior change)
+
+- **Test files now type-checked too.** `pnpm typecheck` now also type-checks
+  every package's `test/**` sources, via a new `tsconfig.test.json` in each
+  of the 9 packages (wired into each package's own `typecheck` script,
+  `exclude: []` to undo `tsconfig.base.json`'s test-file exclusion).
+  Previously only `pnpm lint`'s type-aware ESLint program ever touched test
+  files, and in an environment where that program's `@types/node` resolution
+  is degraded it could silently fall back to non-type-aware linting and
+  report zero problems for a test file that genuinely doesn't type-check.
+  `@types/node` was added to root `devDependencies` so this gate is real
+  everywhere, not just where `pnpm lint`'s program happens to resolve
+  correctly.
 
 ## [0.4.0] - 2026-07-28
 

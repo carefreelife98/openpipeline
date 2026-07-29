@@ -6,6 +6,7 @@ import type {
   PipelineEvent,
   PipelineEventListener,
   PipelineWithGraph,
+  RunCompleteEvent,
   RunSummary,
 } from '@openpipeline/core';
 import { PipelineNotFoundError, ZERO_COST } from '@openpipeline/core';
@@ -23,7 +24,13 @@ import { createNodeHttpHandler } from '../src/node-http.js';
 
 interface RunController {
   emit: (event: PipelineEvent) => void;
-  finish: (status: RunResult['status']) => void;
+  // A run can only ever "finish" into a TERMINAL status — `RunResult['status']`
+  // (the full `RunStatus`) also includes 'RUNNING', which doesn't type-check
+  // against the `RunCompleteEvent` this emits below and doesn't make semantic
+  // sense here either (T2 review Minor 6 / gate hole: this mismatch was
+  // invisible before tsconfig.test.json existed). `RunCompleteEvent['status']`
+  // is the real terminal subset, reused rather than hand-duplicated.
+  finish: (status: RunCompleteEvent['status']) => void;
 }
 
 class StubEngine implements EnginePort {
