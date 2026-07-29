@@ -208,6 +208,19 @@ jobs:
               echo "ERROR: expected tarball not found: $tarball" >&2
               exit 1
             fi
+            # Idempotent re-run: a previous (partially failed) run of this
+            # job, or a deliberate manual first-publish of a brand-new
+            # package (see RELEASING.md fallback), may have already put this
+            # exact version on the registry. npm publish would then fail the
+            # whole loop with EPUBLISHCONFLICT mid-sequence, stranding every
+            # later package in ORDER. Registry state at this exact version is
+            # the release's single source of truth, so skip loudly and move
+            # on. `npm view` exits non-zero for a missing version, which is
+            # the "not published yet" branch.
+            if npm view "@openpipeline/${pkg}@${VERSION}" version >/dev/null 2>&1; then
+              echo "SKIP @openpipeline/${pkg}@${VERSION} -- already on the registry (idempotent re-run)."
+              continue
+            fi
             echo "Publishing $tarball ..."
             # No --access flag: every packages/*/package.json already sets
             # "publishConfig": { "access": "public" }, which npm reads from
