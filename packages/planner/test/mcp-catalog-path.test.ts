@@ -9,6 +9,7 @@ import {
   DEFAULT_FAKE_PROVIDERS,
   makeFakeCatalogLoader,
   makeFakeMcpNodeResolver,
+  makeRejectingFakeCatalogLoader,
 } from './helpers/fake-catalog.js';
 import {
   FakeChatModel,
@@ -1091,6 +1092,56 @@ describe('(g) select fail-soft: catalogLoader.load() rejection degrades to stati
     await expect(planner.plan({ instruction: 'maybe use a tool' })).rejects.toBeInstanceOf(
       PipelineAbortedError
     );
+  });
+});
+
+describe('(g2) a failed load() is not cached — a later select re-entry retries it (T4 review Minor 3 / README.md MCP tool selection section)', () => {
+  it('calls catalogLoader.load() a second time on a D2b re-entry after the first load() rejected', async () => {
+    // Round 1: catalog load rejects -> select fails soft straight to design
+    // with static specs only, without ever calling its own LLM. Round 1's
+    // design then "hallucinates" an mcp: key that was never selected/resolved
+    // (impossible to have been, since the catalog never loaded), so validate
+    // flags it and correct routes back to select for round 2 -- the exact
+    // D2b re-entry the "not cached" contract is about. Round 2: load()
+    // rejects again (this is the assertion: it was actually CALLED again,
+    // not skipped because a prior failure was cached), select fails soft
+    // again, and round 2's design produces a clean static-only draft so the
+    // run succeeds instead of exhausting.
+    const model = new FakeChatModel([
+      intentRaw(true, ['demo']),
+      unresolvedMcpKeyRawDraft(), // round 1 design: hallucinates "mcp:demo:other"
+      staticOnlyRawDraft(), // round 2 design: behaves this time
+    ]);
+    const catalogLoader = makeRejectingFakeCatalogLoader(
+      new Error('ECONNREFUSED: mcp gateway unreachable')
+    );
+    const mcpNodeResolver = makeFakeMcpNodeResolver(new Map());
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+      maxAttempts: 3,
+    });
+
+    const result = await planner.plan({ instruction: 'maybe use a tool' });
+
+    expect(result.attempts).toBe(2);
+    expect(result.unresolvedValidationErrors).toBeUndefined();
+    expect(result.draft.nodes).toHaveLength(1);
+    // select's own LLM was never reached in either round -- only intent +
+    // the two design calls ran.
+    expect(model.calls).toHaveLength(3);
+    // The load-bearing assertion: load() was retried on the second select
+    // entry rather than reusing a cached rejection.
+    expect(catalogLoader.loadCalls).toBe(2);
+    // The identical fail-soft warning from both rounds is deduped to one
+    // entry (dedupeAgainstExisting against state.plannerWarnings).
+    const matchingWarnings = (result.plannerWarnings ?? []).filter((w) =>
+      w.includes('MCP catalog unavailable')
+    );
+    expect(matchingWarnings).toHaveLength(1);
   });
 });
 

@@ -22,9 +22,13 @@ typed error, one opt-in store option) rather than shipped speculatively.
   exported from `@openpipeline/planner`) — `PipelinePlanner.plan()` throws
   this, instead of a bare `Error`, when the `design -> validate -> correct`
   loop exhausts every attempt without EVER producing a single `PlannerDraft`
-  (every attempt failed `PlannerDraftSchema.parse`). The message text is
-  unchanged (`planning finished with no draft produced after <N>
-attempt(s).`) — only the thrown type is more specific, so a caller catching
+  (every attempt failed `PlannerDraftSchema.parse`). The message now also
+  names the attempt count (`planning finished with no draft produced after
+<N> attempt(s).` — the old message, `planning finished with no draft
+produced.`, had no attempt count and a different trailing period
+  placement, so a consumer matching the old text breaks). Classify this
+  programmatically via `instanceof PlannerExhaustedError` — never by matching
+  the message text, which is not a stable contract. A caller catching
   `Error` still catches this; a caller wanting the attempt count or the
   accumulated schema-failure issues no longer has to parse the message for
   them. The OTHER exhaustion shape — a draft exists but never validates

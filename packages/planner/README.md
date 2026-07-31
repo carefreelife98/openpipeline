@@ -44,6 +44,24 @@ const pipelineId = await engine.save(draft);
 const { runId, done } = await engine.run({ pipelineId });
 ```
 
+`maxAttempts` exhaustion has two different shapes, and only one of them is a rejection:
+
+- **Exhausted WITH a draft** (every attempt produced a `PlannerDraft`, but none ever passed validation): `plan()` still **resolves** normally, with `PlannerResult.unresolvedValidationErrors` set to the last round's issues — the `if (unresolvedValidationErrors)` branch above.
+- **Exhausted WITH NO draft** (every attempt, including the last, failed `PlannerDraftSchema.parse` — a schema-shape defect, not a graph-structure one): `plan()` **rejects** with a typed `PlannerExhaustedError` (`extends Error`, `readonly attempts: number`, `readonly lastIssues?: GraphValidationIssue[]`), instead of a bare `Error` — there is no draft to attach `unresolvedValidationErrors` to, so throwing is the only option. Classify it via `instanceof`, not by matching the error message:
+
+```ts
+import { PlannerExhaustedError } from '@openpipeline/planner';
+
+try {
+  const { draft } = await planner.plan({ instruction: '...' });
+} catch (err) {
+  if (err instanceof PlannerExhaustedError) {
+    // err.attempts, err.lastIssues (GraphValidationIssue[] | undefined)
+  }
+  throw err;
+}
+```
+
 See [`examples/planner-quickstart`](https://github.com/carefreelife98/openpipeline/tree/main/examples/planner-quickstart) for a complete, runnable version of this instruction -> `plan()` -> `save()` -> `run()` flow (deterministic, zero API keys).
 
 ## MCP tool selection (`intent -> select`)

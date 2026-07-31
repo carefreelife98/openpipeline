@@ -241,7 +241,10 @@ describe('createEnvCatalogLoader — mid-load failure closes already-opened clie
     });
 
     await expect(loader.load({})).rejects.toThrow('schema fetch failed');
-    expect(warn).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('after a mid-load error'),
+      expect.anything()
+    );
   });
 });
 

@@ -43,6 +43,15 @@ export interface BuilderState {
   // to be selected/destructured and called standalone (e.g. `useStore((s) =>
   // s.addNode)`). Property syntax avoids unbound-method false positives and
   // gives strict contravariant parameter checking.
+  /**
+   * Load a draft into the store. `opts.dirty` (default `false`, matching the
+   * prior unconditional behavior) is a back-compat opt-in for callers that
+   * legitimately load a draft already known to be unsaved relative to some
+   * OTHER source of truth — e.g. a programmatically-generated draft, or a
+   * scheduler replaying a draft that hasn't been persisted yet — so it reads
+   * as dirty immediately instead of requiring a separate `store.setState({
+   * dirty: true })` call outside the documented action.
+   */
   loadDraft: (draft: PipelineDraft & { id?: string }, opts?: { dirty?: boolean }) => void;
   reset: () => void;
   setName: (name: string) => void;
