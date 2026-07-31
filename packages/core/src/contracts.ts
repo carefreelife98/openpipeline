@@ -176,6 +176,16 @@ export interface CatalogResult {
  * of a loader — it is NOT part of this core contract.
  */
 export interface CatalogLoader {
+  /**
+   * If `load()` rejects, it MUST have already closed anything it opened
+   * before rejecting (transports, clients, connections) — a rejected `load()`
+   * never produces a `CatalogResult`, so there is no `cleanup()` a caller can
+   * invoke to reclaim those resources. Callers that treat a rejection as
+   * fail-soft (e.g. degrading to a static-spec-only plan and retrying
+   * `load()` again later, as `@openpipeline/planner`'s `select` node does)
+   * depend on this: a loader that leaks on a mid-load failure leaks silently,
+   * once per retry, with no error ever surfacing to signal it.
+   */
   load(ctx: { userId?: string; tenantId?: string }): Promise<CatalogResult>;
 }
 

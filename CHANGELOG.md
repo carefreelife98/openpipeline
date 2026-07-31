@@ -51,6 +51,14 @@ with static specs only.`), and the run proceeds using only the static
   every other fail-soft boundary this package already has (a `select`
   resolution failure, a malformed structured-output response, a rejecting
   cleanup) — a catalog outage should degrade the plan, not abort it.
+  **A failed `load()` is not cached** — `runtime.mcpCatalogBox.loaded` is
+  only assigned after a successful `load()` resolves — so this modifies the
+  existing "catalog loaded at most once per `plan()` call" guarantee
+  (`packages/planner/README.md`): that guarantee now holds on the success
+  path only. A later `select` re-entry after a failed load (e.g. a
+  validation error naming an unresolved `mcp:` key routing back from
+  `correct`) calls `catalogLoader.load()` again and pays the full transport
+  cost a second time.
 - **`select` node: duplicate `selectedKeys` from the model are deduped before
   resolving.** A response repeating the same `mcp:<provider>:<tool>` key
   previously cost one `mcpNodeResolver.resolveSpec` round trip PER repeat,
