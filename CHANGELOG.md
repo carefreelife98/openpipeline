@@ -8,7 +8,7 @@ All 9 `@openpipeline/*` packages (`core`, `nodes`, `planner`, `runtime`, `mcp`,
 **lockstep** — one version number for the whole set, published together (see
 [RELEASING.md](./RELEASING.md)).
 
-## [Unreleased] - 0.5.1
+## [0.5.1] - 2026-07-31 - 0.5.1
 
 A quality-hardening batch over the 0.5.0 planner port: 7 deferred findings
 from that release's final review, each judged worth fixing on its own merits
