@@ -60,6 +60,31 @@ export function makeFakeCatalogLoader(
   };
 }
 
+/**
+ * A `CatalogLoader` fake whose `load()` always rejects with `error` — used to
+ * pin the "a failed `load()` is not cached" contract (quality-batch item 2 /
+ * `README.md`'s MCP tool selection section): a later `select` re-entry (a
+ * D2b routing back from `correct`) must call `load()` again from scratch,
+ * not reuse a cached failure. `cleanupCalls` stays 0 forever — a rejecting
+ * `load()` never produces a `CatalogResult`, so there is never a `cleanup()`
+ * to call.
+ */
+export function makeRejectingFakeCatalogLoader(error: Error): FakeCatalogLoader {
+  const state = { loadCalls: 0 };
+  return {
+    get loadCalls() {
+      return state.loadCalls;
+    },
+    get cleanupCalls() {
+      return 0;
+    },
+    load(): Promise<CatalogResult> {
+      state.loadCalls += 1;
+      return Promise.reject(error);
+    },
+  };
+}
+
 export interface FakeMcpNodeResolver extends McpNodeResolver {
   /** Every key `resolveSpec` was actually called with, in call order. */
   readonly resolveCalls: string[];

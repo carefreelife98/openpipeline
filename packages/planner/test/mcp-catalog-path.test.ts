@@ -1,5 +1,5 @@
 import { OutputParserException } from '@langchain/core/output_parsers';
-import { PipelineAbortedError } from '@openpipeline/core';
+import { PipelineAbortedError, type McpNodeResolver } from '@openpipeline/core';
 import { describe, expect, it } from 'vitest';
 
 import { PipelinePlanner } from '../src/planner.js';
@@ -9,12 +9,14 @@ import {
   DEFAULT_FAKE_PROVIDERS,
   makeFakeCatalogLoader,
   makeFakeMcpNodeResolver,
+  makeRejectingFakeCatalogLoader,
 } from './helpers/fake-catalog.js';
 import {
   FakeChatModel,
   InvokeRejectingChatModel,
   ThrowingAfterNCallsChatModel,
   makeLlmFactory,
+  type StructuredOutputFake,
 } from './helpers/fake-chat-model.js';
 import {
   consumerSpec,
@@ -34,6 +36,35 @@ function intentRaw(needsMcp: boolean, candidateProviderKeys: string[] = []): unk
 /** `select`'s canned structured-output payload. */
 function selectRaw(selectedKeys: string[]): unknown {
   return { selectedKeys };
+}
+
+/**
+ * A minimal structured-output fake that resolves canned `responses` in order
+ * (last one repeats, same call-order semantics as {@link FakeChatModel}) and
+ * invokes `onCall(index)` synchronously immediately before resolving each
+ * call — used to fire an `AbortController.abort()` side effect at an exact
+ * call boundary, with no timers, to assert `checkAbort`'s per-call
+ * granularity inside `select.node.ts`'s retry/resolve loop (quality-batch
+ * item 4).
+ */
+function makeHookedModel(
+  responses: readonly unknown[],
+  onCall: (index: number) => void
+): StructuredOutputFake {
+  let callIndex = 0;
+  return {
+    withStructuredOutput(): { invoke(input: unknown): Promise<unknown> } {
+      return {
+        invoke: (): Promise<unknown> => {
+          const index = callIndex;
+          callIndex += 1;
+          onCall(index);
+          const responseIndex = Math.min(index, responses.length - 1);
+          return Promise.resolve(responses[responseIndex]);
+        },
+      };
+    },
+  };
 }
 
 /** A valid draft using only static specs (no `mcp:` key) — same shape planner.test.ts's `validRawDraft` uses. */
@@ -1013,5 +1044,246 @@ describe('(f) catalog-path exhaustion: an unresolved mcp: key persists across ev
     // Both design attempts + both select entries actually ran — the run was
     // not silently truncated by the recursion budget.
     expect(model.calls).toHaveLength(5);
+  });
+});
+
+describe('(g) select fail-soft: catalogLoader.load() rejection degrades to static-spec design (quality-batch item 2 — DESIGN DECISION)', () => {
+  it('a rejecting load() still produces a successful draft with a plannerWarning, never calling the select LLM', async () => {
+    const model = new FakeChatModel([intentRaw(true, ['demo']), staticOnlyRawDraft()]);
+    const catalogLoader = {
+      load: () => Promise.reject(new Error('ECONNREFUSED: mcp gateway unreachable')),
+    };
+    const mcpNodeResolver = makeFakeMcpNodeResolver(new Map());
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+    });
+
+    const result = await planner.plan({ instruction: 'maybe use a tool' });
+
+    expect(result.attempts).toBe(1);
+    expect(result.draft.nodes).toHaveLength(1);
+    // Only intent + design ran — select's own LLM was never reached because
+    // the catalog never finished loading.
+    expect(model.calls).toHaveLength(2);
+    expect(result.plannerWarnings).toBeDefined();
+    expect(
+      result.plannerWarnings?.some(
+        (w) => w.includes('MCP catalog unavailable') && w.includes('ECONNREFUSED')
+      )
+    ).toBe(true);
+  });
+
+  it('a PipelineAbortedError from load() still rejects plan() — the one exception to fail-soft', async () => {
+    const model = new FakeChatModel([intentRaw(true, ['demo']), staticOnlyRawDraft()]);
+    const catalogLoader = { load: () => Promise.reject(new PipelineAbortedError()) };
+    const mcpNodeResolver = makeFakeMcpNodeResolver(new Map());
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+    });
+
+    await expect(planner.plan({ instruction: 'maybe use a tool' })).rejects.toBeInstanceOf(
+      PipelineAbortedError
+    );
+  });
+});
+
+describe('(g2) a failed load() is not cached — a later select re-entry retries it (T4 review Minor 3 / README.md MCP tool selection section)', () => {
+  it('calls catalogLoader.load() a second time on a D2b re-entry after the first load() rejected', async () => {
+    // Round 1: catalog load rejects -> select fails soft straight to design
+    // with static specs only, without ever calling its own LLM. Round 1's
+    // design then "hallucinates" an mcp: key that was never selected/resolved
+    // (impossible to have been, since the catalog never loaded), so validate
+    // flags it and correct routes back to select for round 2 -- the exact
+    // D2b re-entry the "not cached" contract is about. Round 2: load()
+    // rejects again (this is the assertion: it was actually CALLED again,
+    // not skipped because a prior failure was cached), select fails soft
+    // again, and round 2's design produces a clean static-only draft so the
+    // run succeeds instead of exhausting.
+    const model = new FakeChatModel([
+      intentRaw(true, ['demo']),
+      unresolvedMcpKeyRawDraft(), // round 1 design: hallucinates "mcp:demo:other"
+      staticOnlyRawDraft(), // round 2 design: behaves this time
+    ]);
+    const catalogLoader = makeRejectingFakeCatalogLoader(
+      new Error('ECONNREFUSED: mcp gateway unreachable')
+    );
+    const mcpNodeResolver = makeFakeMcpNodeResolver(new Map());
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+      maxAttempts: 3,
+    });
+
+    const result = await planner.plan({ instruction: 'maybe use a tool' });
+
+    expect(result.attempts).toBe(2);
+    expect(result.unresolvedValidationErrors).toBeUndefined();
+    expect(result.draft.nodes).toHaveLength(1);
+    // select's own LLM was never reached in either round -- only intent +
+    // the two design calls ran.
+    expect(model.calls).toHaveLength(3);
+    // The load-bearing assertion: load() was retried on the second select
+    // entry rather than reusing a cached rejection.
+    expect(catalogLoader.loadCalls).toBe(2);
+    // The identical fail-soft warning from both rounds is deduped to one
+    // entry (dedupeAgainstExisting against state.plannerWarnings).
+    const matchingWarnings = (result.plannerWarnings ?? []).filter((w) =>
+      w.includes('MCP catalog unavailable')
+    );
+    expect(matchingWarnings).toHaveLength(1);
+  });
+});
+
+describe('(h) select dedupes selectedKeys before resolving (quality-batch item 1)', () => {
+  it('resolves a duplicated key exactly once instead of round-tripping resolveSpec twice', async () => {
+    const model = new FakeChatModel([
+      intentRaw(true, ['demo']),
+      selectRaw(['mcp:demo:lookup', 'mcp:demo:lookup']),
+      staticOnlyRawDraft(),
+    ]);
+    const catalogLoader = makeFakeCatalogLoader();
+    const mcpNodeResolver = makeFakeMcpNodeResolver(
+      new Map([[mcpGenericSpec.key, mcpGenericSpec]])
+    );
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+    });
+
+    await planner.plan({ instruction: 'use a tool twice, maybe' });
+
+    expect(mcpNodeResolver.resolveCalls).toEqual(['mcp:demo:lookup']);
+  });
+
+  it('produces exactly one plannerWarning for a duplicated key whose resolveSpec rejects (no duplicate failure warning)', async () => {
+    const model = new FakeChatModel([
+      intentRaw(true, ['demo']),
+      selectRaw(['mcp:demo:broken', 'mcp:demo:broken']),
+      staticOnlyRawDraft(),
+    ]);
+    const catalogLoader = makeFakeCatalogLoader([
+      {
+        key: 'demo',
+        displayName: 'Demo',
+        tools: [
+          {
+            name: 'broken',
+            description: 'always fails to resolve',
+            invoke: () => Promise.resolve({}),
+          },
+        ],
+      },
+    ]);
+    const mcpNodeResolver = makeFakeMcpNodeResolver(new Map()); // nothing registered -> always rejects
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+    });
+
+    const result = await planner.plan({ instruction: 'use a broken tool twice, maybe' });
+
+    expect(mcpNodeResolver.resolveCalls).toEqual(['mcp:demo:broken']);
+    const matchingWarnings = (result.plannerWarnings ?? []).filter((w) =>
+      w.includes('mcp:demo:broken')
+    );
+    expect(matchingWarnings).toHaveLength(1);
+  });
+});
+
+describe('(i) select loop abort granularity: checkAbort runs before the same-input retry (quality-batch item 4)', () => {
+  it('rejects with PipelineAbortedError instead of making the retry call once the signal aborts right after the first empty attempt', async () => {
+    // Counts EVERY withStructuredOutput().invoke() call across the whole
+    // graph (intent/select/design all share this one fake model instance),
+    // not just select's own — otherwise this test would still pass for the
+    // WRONG reason: correctNode's own node-entry checkAbort would eventually
+    // catch a signal aborted mid-run regardless of select's own retry
+    // granularity, several nodes later (select-retry -> design -> correct).
+    // Asserting the exact call count pins down that checkAbort fires
+    // IMMEDIATELY after the first empty attempt -- before the retry, design,
+    // or correct ever run at all.
+    const controller = new AbortController();
+    let totalCalls = 0;
+    const model = makeHookedModel([intentRaw(true, ['demo']), selectRaw([])], (index) => {
+      totalCalls += 1;
+      if (index === 1) controller.abort(); // right after select's first attempt resolves
+    });
+    const catalogLoader = makeFakeCatalogLoader();
+    const mcpNodeResolver = makeFakeMcpNodeResolver(new Map());
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+    });
+
+    await expect(
+      planner.plan({ instruction: 'maybe use a tool', signal: controller.signal })
+    ).rejects.toBeInstanceOf(PipelineAbortedError);
+
+    // Exactly 2 calls (intent, select's first attempt) -- the same-input
+    // retry (a would-be 3rd call) never happened, and neither did design (a
+    // would-be 4th) -- checkAbort caught it right after the first attempt.
+    expect(totalCalls).toBe(2);
+  });
+});
+
+describe('(j) select loop abort granularity: checkAbort runs before each resolveSpec call (quality-batch item 4)', () => {
+  it('rejects with PipelineAbortedError instead of resolving the second key once the signal aborts mid-loop', async () => {
+    const controller = new AbortController();
+    const model = new FakeChatModel([
+      intentRaw(true, ['demo']),
+      selectRaw(['mcp:demo:lookup', 'mcp:demo:other']),
+    ]);
+    const catalogLoader = makeFakeCatalogLoader([
+      {
+        key: 'demo',
+        displayName: 'Demo',
+        tools: [
+          { name: 'lookup', description: 'first tool', invoke: () => Promise.resolve({}) },
+          { name: 'other', description: 'second tool', invoke: () => Promise.resolve({}) },
+        ],
+      },
+    ]);
+    const resolveCalls: string[] = [];
+    const mcpNodeResolver: McpNodeResolver = {
+      resolveSpec: (key: string) => {
+        resolveCalls.push(key);
+        if (key === 'mcp:demo:lookup') controller.abort();
+        return Promise.resolve(key === 'mcp:demo:lookup' ? mcpGenericSpec : mcpOtherSpec);
+      },
+    };
+    const planner = new PipelinePlanner({
+      llmFactory: makeLlmFactory(model),
+      modelId: 'test-model',
+      specs: testSpecs,
+      catalogLoader,
+      mcpNodeResolver,
+    });
+
+    await expect(
+      planner.plan({ instruction: 'use two tools', signal: controller.signal })
+    ).rejects.toBeInstanceOf(PipelineAbortedError);
+
+    // The second key's resolveSpec was never reached -- checkAbort caught
+    // the abort at the top of the next loop iteration first.
+    expect(resolveCalls).toEqual(['mcp:demo:lookup']);
   });
 });

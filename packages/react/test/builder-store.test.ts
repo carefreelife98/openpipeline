@@ -398,6 +398,21 @@ describe('createBuilderStore', () => {
       store.getState().loadDraft(draft);
       expect(store.getState().selectedNodeId).toBeNull();
     });
+
+    it('defaults to dirty: false when opts is omitted (backward-compatible, quality-batch item 7)', () => {
+      store.getState().loadDraft(draft);
+      expect(store.getState().dirty).toBe(false);
+    });
+
+    it('lands dirty: true when opts.dirty is explicitly true (quality-batch item 7)', () => {
+      store.getState().loadDraft(draft, { dirty: true });
+      expect(store.getState().dirty).toBe(true);
+    });
+
+    it('lands dirty: false when opts.dirty is explicitly false, same as omitting opts', () => {
+      store.getState().loadDraft(draft, { dirty: false });
+      expect(store.getState().dirty).toBe(false);
+    });
   });
 
   describe('toDraft', () => {

@@ -8,6 +8,100 @@ All 9 `@openpipeline/*` packages (`core`, `nodes`, `planner`, `runtime`, `mcp`,
 **lockstep** — one version number for the whole set, published together (see
 [RELEASING.md](./RELEASING.md)).
 
+## [Unreleased] - 0.5.1
+
+A quality-hardening batch over the 0.5.0 planner port: 7 deferred findings
+from that release's final review, each judged worth fixing on its own merits
+(dedupe/leak/routing correctness, one bound API-shaped design decision, one
+typed error, one opt-in store option) rather than shipped speculatively.
+
+### Added (`@openpipeline/planner`)
+
+- **`PlannerExhaustedError`** (`extends Error`, `name: 'PlannerExhaustedError'`,
+  `readonly attempts: number`, `readonly lastIssues?: GraphValidationIssue[]`,
+  exported from `@openpipeline/planner`) — `PipelinePlanner.plan()` throws
+  this, instead of a bare `Error`, when the `design -> validate -> correct`
+  loop exhausts every attempt without EVER producing a single `PlannerDraft`
+  (every attempt failed `PlannerDraftSchema.parse`). The message now also
+  names the attempt count (`planning finished with no draft produced after
+<N> attempt(s).` — the old message, `planning finished with no draft
+produced.`, had no attempt count and a different trailing period
+  placement, so a consumer matching the old text breaks). Classify this
+  programmatically via `instanceof PlannerExhaustedError` — never by matching
+  the message text, which is not a stable contract. A caller catching
+  `Error` still catches this; a caller wanting the attempt count or the
+  accumulated schema-failure issues no longer has to parse the message for
+  them. The OTHER exhaustion shape — a draft exists but never validates
+  cleanly — is unchanged: `plan()` still resolves normally for that case,
+  with `PlannerResult.unresolvedValidationErrors` set, never a throw
+  (`PipelineNotFoundError` precedent style — see the 0.4.0 entry below).
+
+### Changed (`@openpipeline/planner`)
+
+- **`select` node: `catalogLoader.load()` failure now degrades to
+  static-spec planning with a warning (DESIGN DECISION).** A rejecting
+  `load()` was previously unguarded and took the whole `plan()` call down
+  with it. It is now fail-soft: the raw error is preserved via `logger.warn`
+  (never silently dropped), a `plannerWarning` naming the failure is
+  appended (`[select] MCP catalog unavailable: <msg>; proceeding to design
+with static specs only.`), and the run proceeds using only the static
+  `NodeSpec` catalog — the `select` LLM is never even invoked, since there is
+  no catalog to choose from. No distinction is drawn between a transport
+  failure and a defect inside a caller-supplied loader; both degrade
+  identically. `PipelineAbortedError` is the one exception — a
+  caller-requested cancellation, not a catalog failure — and keeps
+  propagating unchanged. Rationale: MCP tool selection is an optional
+  enhancement over the always-available static-spec design path, matching
+  every other fail-soft boundary this package already has (a `select`
+  resolution failure, a malformed structured-output response, a rejecting
+  cleanup) — a catalog outage should degrade the plan, not abort it.
+  **A failed `load()` is not cached** — `runtime.mcpCatalogBox.loaded` is
+  only assigned after a successful `load()` resolves — so this modifies the
+  existing "catalog loaded at most once per `plan()` call" guarantee
+  (`packages/planner/README.md`): that guarantee now holds on the success
+  path only. A later `select` re-entry after a failed load (e.g. a
+  validation error naming an unresolved `mcp:` key routing back from
+  `correct`) calls `catalogLoader.load()` again and pays the full transport
+  cost a second time.
+- **`select` node: duplicate `selectedKeys` from the model are deduped before
+  resolving.** A response repeating the same `mcp:<provider>:<tool>` key
+  previously cost one `mcpNodeResolver.resolveSpec` round trip PER repeat,
+  and, on a resolve failure, one duplicate `plannerWarning` per repeat within
+  the same attempt. Deduped once, immediately after the catalog-membership
+  filter.
+- **`select` node: `checkAbort` is now also checked before the same-input
+  retry and before each key's `resolveSpec` call inside the resolve loop**
+  (previously only at the node's own entry). An abort landing inside either
+  loop is now caught at the next iteration/retry boundary instead of only at
+  the next node's entry, several steps later.
+- **`correct` node: a `designError` round now routes to `'design'`
+  unconditionally**, without first checking whether `state.validationIssues`/
+  `state.draft` reference an unresolved `mcp:` key. On a `designError` round
+  (this round's `design` call failed to parse — `validate` never even ran),
+  those two fields are stale leftovers from an EARLIER round (`design.node.ts`'s
+  catch branch only appends to `validationIssues` and never touches `draft`),
+  so checking them was both wasted work and could wrongly route back to
+  `'select'` over a schema-shape defect that re-selecting a tool cannot fix.
+
+### Fixed
+
+- **`@openpipeline/mcp`**: `createEnvCatalogLoader`'s `load()` no longer
+  leaks already-opened `MultiServerMCPClient` connections when a LATER
+  server's step (e.g. `getRawSchemas`) rejects mid-load. Previously the
+  `cleanup()` closure was only ever returned on a fully successful `load()`,
+  so a partial failure after some clients were already created left them
+  open with nothing left to ever call `.close()` on them. `load()` now closes
+  every client opened so far (best-effort, logged via `logger.warn`, never
+  masking the original error) before rethrowing.
+- **`@openpipeline/react`**: `BuilderState.loadDraft(draft, opts?: { dirty?:
+boolean })` — a new, optional, back-compat second argument (default
+  `dirty: false`, matching the prior unconditional behavior exactly). A
+  loaded draft always landed `dirty: false` regardless of caller context,
+  which pushed at least one downstream consumer (a scheduler replaying a
+  not-yet-persisted draft) to bypass the store's own action and call
+  `store.setState({ dirty: true })` directly. `opts.dirty: true` now covers
+  that case through the documented action instead.
+
 ## [0.5.0] - 2026-07-29
 
 ### Added (`@openpipeline/planner`)

@@ -1,9 +1,11 @@
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
-import type {
-  CatalogLoader,
-  McpNodeResolver,
-  NodeSpec,
-  ResolvedProvider,
+import {
+  PipelineAbortedError,
+  type CatalogLoader,
+  type CatalogResult,
+  type McpNodeResolver,
+  type NodeSpec,
+  type ResolvedProvider,
 } from '@openpipeline/core';
 
 import { checkAbort } from '../abort.js';
@@ -60,13 +62,32 @@ function validKeysOf(providers: readonly ResolvedProvider[]): Set<string> {
  * match) in `existing` — keeps the APPEND-semantics `plannerWarnings` channel
  * (D7) free of duplicates when a node can legitimately run more than once per
  * `plan()` call, as `select` does on a D2b re-entry (T2 review Minor 3).
+ *
+ * Also dedupes WITHIN `candidates` itself (quality-batch T4 review Minor 2):
+ * every accepted candidate is added to `seen` as it's accepted, so a second
+ * occurrence of the same string later in the same `candidates` array is
+ * dropped too, not just entries already in `existing`. Every current call
+ * site happens to pass an array that's already unique by construction (see
+ * this function's call sites), so this has no observable effect today — it's
+ * a defensive completion of the originally-specified "seen accumulates
+ * accepted candidates" mechanism, kept correct for a future call site that
+ * can't make the same uniqueness guarantee.
+ *
+ * Exported (not just module-private) so it can be unit-tested directly with
+ * an internally-duplicated `candidates` array — the scenario every current
+ * call site's upstream invariants make unreachable through `selectNode`'s
+ * public behavior alone (see `select-node.test.ts`).
  */
-function dedupeAgainstExisting(
+export function dedupeAgainstExisting(
   existing: readonly string[],
   candidates: readonly string[]
 ): string[] {
   const seen = new Set(existing);
-  return candidates.filter((candidate) => !seen.has(candidate));
+  return candidates.filter((candidate) => {
+    if (seen.has(candidate)) return false;
+    seen.add(candidate);
+    return true;
+  });
 }
 
 /**
@@ -121,6 +142,42 @@ function dedupeAgainstExisting(
  * `select` always hands off to `design` unconditionally (no conditional edge
  * needed on its outgoing side) — whether or not any MCP tool ended up
  * resolved.
+ *
+ * T4 review (quality-batch), 3 additional hardening items on top of the
+ * above:
+ * - **`catalogLoader.load()` itself is fail-soft (item 2 — DESIGN DECISION),
+ *   not just a selection response.** A rejecting `load()` (transport outage,
+ *   or a defect inside a caller-supplied loader — the two are NOT
+ *   distinguished here, both degrade identically) no longer takes the whole
+ *   `plan()` down with it: it's caught, `logger.warn`'d with the raw error
+ *   (never silently dropped), and converted into the exact same
+ *   `plannerWarning` + "proceed to `design` with static specs only" shape the
+ *   empty-selection branch already returns — the `select` LLM is never even
+ *   invoked in this case, since there's no catalog to choose from. MCP is an
+ *   optional enhancement over the always-available static-spec path (the
+ *   package's whole fail-soft philosophy), so its unavailability degrades,
+ *   it never aborts. `PipelineAbortedError` is the one exception: an abort is
+ *   a caller-requested cancellation, not a catalog failure, and keeps
+ *   propagating unchanged.
+ * - **Duplicate `selectedKeys` are deduped before resolving (item 1).** A
+ *   model response repeating the same key twice (or more) used to cost a
+ *   duplicate `mcpNodeResolver.resolveSpec` round trip per repeat, and — on a
+ *   resolve failure — a duplicate `plannerWarning` for the identical key
+ *   within the SAME attempt (`dedupeAgainstExisting` only dedupes against
+ *   PRIOR `state.plannerWarnings`, never against other candidates generated
+ *   in this same call). Deduped once, right after the catalog-membership
+ *   filter, so every downstream consumer (`validSelectedKeys.length === 0`
+ *   check, the resolve loop) only ever sees each accepted key once.
+ * - **`checkAbort` is now checked at two additional points inside this node's
+ *   own retry/resolve loop (item 4), not just the node's own entry.** Once
+ *   before the same-input retry (an abort landing between the first empty
+ *   attempt and the retry no longer costs a whole extra LLM call before it's
+ *   noticed) and once at the top of EACH resolve-loop iteration (an abort
+ *   landing mid-resolution of a multi-key selection is caught before the next
+ *   key's `resolveSpec` call, not just at the next node's entry several steps
+ *   later). Cheap, node-boundary-consistent granularity — mirrors the
+ *   existing "check `signal` at node entry" contract, just applied to the two
+ *   places inside this one node where a real await already yields control.
  */
 export async function selectNode(
   state: PlannerState,
@@ -132,13 +189,39 @@ export async function selectNode(
 
   const { catalogLoader, mcpNodeResolver } = requireCatalogDeps(runtime);
 
-  if (!runtime.mcpCatalogBox.loaded) {
-    runtime.mcpCatalogBox.loaded = await catalogLoader.load({
-      userId: runtime.context.userId,
-      tenantId: runtime.context.tenantId,
-    });
+  let catalog: CatalogResult;
+  if (runtime.mcpCatalogBox.loaded) {
+    catalog = runtime.mcpCatalogBox.loaded;
+  } else {
+    try {
+      catalog = await catalogLoader.load({
+        userId: runtime.context.userId,
+        tenantId: runtime.context.tenantId,
+      });
+      runtime.mcpCatalogBox.loaded = catalog;
+    } catch (err) {
+      // Quality-batch item 2 (DESIGN DECISION, bound — see this node's doc
+      // comment): fail-soft, not fatal. `PipelineAbortedError` is the one
+      // exception — a caller-requested cancellation, never a catalog
+      // failure — and must keep propagating so `plan()` rejects as
+      // documented everywhere else in this package.
+      if (err instanceof PipelineAbortedError) throw err;
+      const reason = err instanceof Error ? err.message : String(err);
+      runtime.logger.warn(`[PipelinePlanner] MCP catalog unavailable: ${reason}`, err);
+      // Same "preserve an earlier round's resolved specs, only reset on a
+      // genuine first-ever empty selection" contract the empty-selection
+      // branch below uses (T2 review Minor 4) — a load failure on a D2b
+      // re-entry must not wipe out what an earlier round already resolved.
+      const hadPriorSpecs = (state.mcpSpecs?.length ?? 0) > 0;
+      const warning =
+        `[select] MCP catalog unavailable: ${reason}; ` +
+        'proceeding to design with static specs only.';
+      return {
+        ...(hadPriorSpecs ? {} : { mcpSpecs: [], mcpCatalogText: '' }),
+        plannerWarnings: dedupeAgainstExisting(state.plannerWarnings, [warning]),
+      };
+    }
   }
-  const catalog = runtime.mcpCatalogBox.loaded;
   const validKeys = validKeysOf(catalog.providers);
 
   // T3 review llm-robustness #2: `unresolvedKeys` is non-empty exactly when
@@ -182,7 +265,16 @@ export async function selectNode(
     try {
       const rawOutput = await structuredModel.invoke(messages);
       const parsed = SelectSchema.parse(rawOutput);
-      return parsed.selectedKeys.filter((key) => validKeys.has(key));
+      // Quality-batch item 1: dedupe right after the catalog-membership
+      // filter, before this attempt's keys reach anything downstream (the
+      // empty-selection check, the resolve loop) — a model repeating the
+      // same key would otherwise cost a duplicate `resolveSpec` round trip
+      // per repeat, and, on a resolve failure, a duplicate `plannerWarning`
+      // for the identical key WITHIN this attempt (`dedupeAgainstExisting`
+      // only dedupes against `state.plannerWarnings` from a PRIOR call, never
+      // against other candidates generated in this same one).
+      const accepted = parsed.selectedKeys.filter((key) => validKeys.has(key));
+      return [...new Set(accepted)];
     } catch (err) {
       const failure = classifyStructuredOutputError(err);
       if (!failure) throw err;
@@ -193,6 +285,12 @@ export async function selectNode(
 
   let validSelectedKeys = await attemptSelection();
   if (validSelectedKeys.length === 0) {
+    // Quality-batch item 4: check `signal` right here too, not just at this
+    // node's own entry — an abort landing between the first empty attempt
+    // and the retry is now caught before spending a whole extra LLM call on
+    // it, matching the cheap node-boundary-consistent granularity applied to
+    // the resolve loop below.
+    checkAbort(runtime.signal);
     // Fail-soft: 1 same-input retry (D2) before giving up on this round.
     validSelectedKeys = await attemptSelection();
   }
@@ -219,6 +317,12 @@ export async function selectNode(
   const resolvedSpecs: NodeSpec[] = [];
   const resolveWarnings: string[] = [];
   for (const key of validSelectedKeys) {
+    // Quality-batch item 4: per-iteration `checkAbort`, not just once before
+    // the loop — a multi-key selection resolves each key with its own
+    // `await`, so an abort landing mid-loop is now caught before the NEXT
+    // key's `resolveSpec` call instead of only at the next node's entry
+    // several steps later.
+    checkAbort(runtime.signal);
     try {
       const spec = await mcpNodeResolver.resolveSpec(key, {
         userId: runtime.context.userId,

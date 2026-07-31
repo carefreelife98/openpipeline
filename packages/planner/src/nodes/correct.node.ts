@@ -33,6 +33,21 @@ import type { PlannerState } from '../state.js';
  *   tool; every other issue (and the entire no-catalog path, where `select`
  *   doesn't even exist in the compiled graph) routes to `'design'` — mirrors
  *   Mate-X's `routeCorrection`.
+ *
+ *   `state.designError` set (quality-batch item 5) short-circuits this
+ *   entirely to `'design'`, BEFORE the unresolved-mcp-key check ever runs: a
+ *   `designError` round means THIS round's `design` call failed to parse at
+ *   all (`routeAfterDesign` skips `validate` for it — see `design.node.ts`),
+ *   so `state.validationIssues`/`state.draft` are whatever an EARLIER round
+ *   last set (`design.node.ts`'s catch branch only appends to
+ *   `validationIssues`, never touches `draft`) — stale data with nothing to
+ *   do with this round's actual failure. Checking
+ *   `issuesReferenceUnresolvedMcpKey` against it anyway is both wasted work
+ *   and semantically wrong: it can accidentally route back to `'select'`
+ *   over a schema-shape defect that re-selecting a tool cannot fix, purely
+ *   because an unrelated EARLIER round happened to reference an unresolved
+ *   key. The fix this round actually needs is a better-formed `design`
+ *   response, so `'design'` is unconditional here.
  */
 export function correctNode(
   state: PlannerState,
@@ -52,8 +67,14 @@ export function correctNode(
 
   const catalogPathActive =
     runtime.catalogLoader !== undefined && runtime.mcpNodeResolver !== undefined;
+  // Quality-batch item 5: a designError round always goes straight to
+  // 'design' — see this function's doc comment for why checking
+  // state.validationIssues/state.draft here would be examining stale,
+  // unrelated data on this round.
   const correctTarget =
-    catalogPathActive && issuesReferenceUnresolvedMcpKey(state.validationIssues, state.draft)
+    state.designError === undefined &&
+    catalogPathActive &&
+    issuesReferenceUnresolvedMcpKey(state.validationIssues, state.draft)
       ? 'select'
       : 'design';
 

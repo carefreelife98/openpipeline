@@ -43,7 +43,16 @@ export interface BuilderState {
   // to be selected/destructured and called standalone (e.g. `useStore((s) =>
   // s.addNode)`). Property syntax avoids unbound-method false positives and
   // gives strict contravariant parameter checking.
-  loadDraft: (draft: PipelineDraft & { id?: string }) => void;
+  /**
+   * Load a draft into the store. `opts.dirty` (default `false`, matching the
+   * prior unconditional behavior) is a back-compat opt-in for callers that
+   * legitimately load a draft already known to be unsaved relative to some
+   * OTHER source of truth — e.g. a programmatically-generated draft, or a
+   * scheduler replaying a draft that hasn't been persisted yet — so it reads
+   * as dirty immediately instead of requiring a separate `store.setState({
+   * dirty: true })` call outside the documented action.
+   */
+  loadDraft: (draft: PipelineDraft & { id?: string }, opts?: { dirty?: boolean }) => void;
   reset: () => void;
   setName: (name: string) => void;
   setDescription: (d: string) => void;
@@ -85,7 +94,7 @@ export function createBuilderStore() {
     selectedNodeId: null,
     dirty: false,
 
-    loadDraft(draft) {
+    loadDraft(draft, opts) {
       // PipelineNodeRow.id / PipelineEdgeRow.id are required (`string`) in the
       // core contract, so loaded drafts always carry ids — no generation needed.
       const nodes: BuilderNode[] = draft.nodes.map((n) => ({
@@ -113,7 +122,15 @@ export function createBuilderStore() {
         startTargets,
         endSources,
         selectedNodeId: null,
-        dirty: false,
+        // Quality-batch item 7: `opts.dirty` is a back-compat opt-in — omitted
+        // (or explicitly `false`) keeps the original "a freshly loaded draft
+        // is clean" behavior unchanged. A consumer that legitimately loads a
+        // draft it already knows to be unsaved relative to some OTHER source
+        // of truth (e.g. a scheduler replaying a draft that hasn't been
+        // persisted yet) can now say so through the documented action
+        // instead of reaching past it for a raw `store.setState({ dirty:
+        // true })` call.
+        dirty: opts?.dirty ?? false,
       });
     },
 

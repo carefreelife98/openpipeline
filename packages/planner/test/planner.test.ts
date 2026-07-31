@@ -2,6 +2,7 @@ import { OutputParserException } from '@langchain/core/output_parsers';
 import { NOOP_LOGGER, PipelineAbortedError } from '@openpipeline/core';
 import { describe, expect, it, vi } from 'vitest';
 
+import { PlannerExhaustedError } from '../src/errors.js';
 import { designNode } from '../src/nodes/design.node.js';
 import { PipelinePlanner } from '../src/planner.js';
 import { buildSpecCatalogText } from '../src/prompts.js';
@@ -421,7 +422,7 @@ describe('PipelinePlanner.plan — no-MCP core loop', () => {
     expect(realIssueIndex).toBeLessThan(schemaIssueIndex);
   });
 
-  it('(k) exhaustion on nothing but schema-parse failures surfaces a clear error, not a raw ZodError (T1 review round 3, M6)', async () => {
+  it('(k) exhaustion on nothing but schema-parse failures surfaces a typed PlannerExhaustedError, not a raw ZodError (T1 review round 3, M6; typed in quality-batch item 6)', async () => {
     const model = new FakeChatModel([malformedRawDraft()]); // repeats — never parses
     const planner = new PipelinePlanner({
       llmFactory: makeLlmFactory(model),
@@ -433,11 +434,29 @@ describe('PipelinePlanner.plan — no-MCP core loop', () => {
     // T2 carried-over T1 minor (b): `.rejects.not.toBeInstanceOf(z.ZodError)`
     // is satisfied by ANY non-ZodError rejection (including an unrelated bug
     // throwing a completely different error) — too weak to actually prove
-    // `plan()` surfaces the documented exhaustion message. Assert the exact
-    // message instead.
-    await expect(planner.plan({ instruction: 'Echo some text, then shout it.' })).rejects.toThrow(
-      /planning finished with no draft produced/
-    );
+    // `plan()` surfaces the documented exhaustion shape. Assert the specific
+    // typed error (quality-batch item 6 — mirrors `PipelineNotFoundError`'s
+    // style: `extends Error`, a stable `name`, structured fields a caller can
+    // read instead of parsing the message) instead of a bare `Error`.
+    let caught: unknown;
+    try {
+      await planner.plan({ instruction: 'Echo some text, then shout it.' });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(PlannerExhaustedError);
+    const error = caught as PlannerExhaustedError;
+    expect(error.name).toBe('PlannerExhaustedError');
+    expect(error.message).toMatch(/planning finished with no draft produced/);
+    // maxAttempts=2 design calls were actually made before giving up.
+    expect(error.attempts).toBe(2);
+    // Every attempt's schema-parse failure was appended as a validation
+    // issue (design.node.ts's catch branch) -- the caller gets to see WHY
+    // each attempt failed, not just that the run gave up.
+    expect(error.lastIssues?.length ?? 0).toBeGreaterThan(0);
+    expect(error.lastIssues?.every((issue) => issue.code === 'NODE_TYPE_MISMATCH')).toBe(true);
+
     expect(model.calls).toHaveLength(2);
   });
 
