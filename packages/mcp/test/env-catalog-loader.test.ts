@@ -207,6 +207,44 @@ describe('createEnvCatalogLoader — cleanup', () => {
   });
 });
 
+describe('createEnvCatalogLoader — mid-load failure closes already-opened clients (quality-batch item 3)', () => {
+  it("closes every client opened so far when the SECOND server's getRawSchemas rejects mid-load, then rethrows", async () => {
+    const clientA = fakeClient();
+    const clientB = fakeClient();
+    const queue = [clientA, clientB];
+    createClient.mockImplementation(() => queue.shift());
+    getRawSchemas
+      .mockResolvedValueOnce({ inputSchemas: new Map(), outputSchemas: new Map() }) // server A: fine
+      .mockRejectedValueOnce(new Error('schema fetch failed')); // server B: rejects
+    const serverB: McpServerConfig = { key: 'srvB', transportType: 'http', url: 'http://b.test' };
+    const loader = createEnvCatalogLoader({ servers: [HTTP_SERVER, serverB] });
+
+    await expect(loader.load({})).rejects.toThrow('schema fetch failed');
+
+    // Both clients were already opened (createClient ran for both servers
+    // before the 2nd server's getRawSchemas rejected) -- without the fix,
+    // `load()` throws before ever returning the `cleanup` closure that would
+    // otherwise close them, so both would leak silently.
+    expect(clientA.close).toHaveBeenCalledTimes(1);
+    expect(clientB.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('a client-close failure during that cleanup is logged, not thrown, and the original error still surfaces', async () => {
+    const clientA = fakeClient();
+    clientA.close = vi.fn().mockRejectedValue(new Error('close boom'));
+    createClient.mockImplementation(() => clientA);
+    getRawSchemas.mockRejectedValue(new Error('schema fetch failed'));
+    const warn = vi.fn();
+    const loader = createEnvCatalogLoader({
+      servers: [HTTP_SERVER],
+      logger: { info: vi.fn(), warn, error: vi.fn(), debug: vi.fn() },
+    });
+
+    await expect(loader.load({})).rejects.toThrow('schema fetch failed');
+    expect(warn).toHaveBeenCalled();
+  });
+});
+
 describe('createEnvCatalogLoader — CatalogPolicy.resolveAuthProvider precedence', () => {
   it('prefers resolveAuthProvider over resolveToken', async () => {
     const resolveToken = vi.fn().mockResolvedValue('tok');
