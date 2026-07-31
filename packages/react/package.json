@@ -1,6 +1,6 @@
 {
   "name": "@openpipeline/react",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Visual DAG builder for OpenPipeline as a controlled React component library (ReactFlow + Zustand).",
   "license": "MIT",
   "author": "carefreelife98",
