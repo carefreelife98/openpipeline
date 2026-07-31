@@ -2,6 +2,7 @@ import { END, START, StateGraph } from '@langchain/langgraph';
 import { NOOP_LOGGER, type CatalogLoader, type McpNodeResolver } from '@openpipeline/core';
 
 import { checkAbort } from './abort.js';
+import { PlannerExhaustedError } from './errors.js';
 import { correctNode } from './nodes/correct.node.js';
 import { designNode } from './nodes/design.node.js';
 import { intentNode } from './nodes/intent.node.js';
@@ -343,7 +344,19 @@ export class PipelinePlanner {
       // throw — an EXISTING shape, not a new one — is the one that applies;
       // it also still covers the (structurally unreachable via the graph
       // wired in buildPlannerGraph) defensive case of a wiring regression.
-      throw new Error('[PipelinePlanner] planning finished with no draft produced.');
+      //
+      // Typed as `PlannerExhaustedError` (quality-batch item 6), not a bare
+      // `Error` — carries `attempts` and the accumulated `lastIssues` (every
+      // failed attempt's schema-parse complaint, appended by
+      // `design.node.ts`'s catch branch) so a caller can classify and inspect
+      // this failure via `instanceof` instead of parsing the message. The
+      // OTHER exhaustion shape — a draft exists but never validates cleanly —
+      // is untouched: that path still resolves normally below, with
+      // `unresolvedValidationErrors` set, never a throw.
+      throw new PlannerExhaustedError(
+        finalState.attempts,
+        finalState.validationIssues.length > 0 ? finalState.validationIssues : undefined
+      );
     }
 
     // T2 review Important 2: surface a rejecting cleanup() on the success

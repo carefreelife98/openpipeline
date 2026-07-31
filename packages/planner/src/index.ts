@@ -1,6 +1,7 @@
 // @openpipeline/planner — natural-language pipeline planner: an LLM-driven
 // design -> validate -> correct loop over LangGraph producing a PipelineDraft.
 
+export { PlannerExhaustedError } from './errors.js';
 export { PipelinePlanner } from './planner.js';
 export type {
   PipelinePlannerOptions,
