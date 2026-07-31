@@ -62,13 +62,32 @@ function validKeysOf(providers: readonly ResolvedProvider[]): Set<string> {
  * match) in `existing` — keeps the APPEND-semantics `plannerWarnings` channel
  * (D7) free of duplicates when a node can legitimately run more than once per
  * `plan()` call, as `select` does on a D2b re-entry (T2 review Minor 3).
+ *
+ * Also dedupes WITHIN `candidates` itself (quality-batch T4 review Minor 2):
+ * every accepted candidate is added to `seen` as it's accepted, so a second
+ * occurrence of the same string later in the same `candidates` array is
+ * dropped too, not just entries already in `existing`. Every current call
+ * site happens to pass an array that's already unique by construction (see
+ * this function's call sites), so this has no observable effect today — it's
+ * a defensive completion of the originally-specified "seen accumulates
+ * accepted candidates" mechanism, kept correct for a future call site that
+ * can't make the same uniqueness guarantee.
+ *
+ * Exported (not just module-private) so it can be unit-tested directly with
+ * an internally-duplicated `candidates` array — the scenario every current
+ * call site's upstream invariants make unreachable through `selectNode`'s
+ * public behavior alone (see `select-node.test.ts`).
  */
-function dedupeAgainstExisting(
+export function dedupeAgainstExisting(
   existing: readonly string[],
   candidates: readonly string[]
 ): string[] {
   const seen = new Set(existing);
-  return candidates.filter((candidate) => !seen.has(candidate));
+  return candidates.filter((candidate) => {
+    if (seen.has(candidate)) return false;
+    seen.add(candidate);
+    return true;
+  });
 }
 
 /**
