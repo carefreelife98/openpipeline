@@ -1,17 +1,63 @@
 # OpenPipeline
 
-A framework-agnostic engine for compiling and running **MCP-tool pipelines** as
-[LangGraph](https://github.com/langchain-ai/langgraphjs) DAGs.
+**Embeddable, MCP-native workflow automation for your product.**
 
-Draw a graph of nodes — tools, LLM calls, conditional branches — and OpenPipeline
-compiles it to a LangGraph `StateGraph` and executes it, with typed inputs/outputs
-(Zod), state-path bindings between nodes, cost tracking, and abort support.
+OpenPipeline is a library, not a hosted product: you (a developer) embed it
+into your own application so that _your_ end users — typically not
+developers — can build, edit, and run workflows, instead of you hand-coding
+one graph per use case. Those user-built graphs (tools, LLM calls, conditional
+branches) compile to a
+[LangGraph](https://github.com/langchain-ai/langgraphjs) `StateGraph` and run
+on it, with typed inputs/outputs (Zod), state-path bindings between nodes,
+cost tracking, and abort support.
 
 It is **headless and unopinionated**: no web framework, no database, no
-multi-tenancy. You bring an LLM provider and (optionally) a persistence backend;
-everything else is an interface you can swap.
+multi-tenancy baked in. You bring an LLM provider and (optionally) a
+persistence backend; everything else — canvas, catalog policy, storage — is
+an interface you can swap or skip.
 
-> Status: early (`0.2.x`). The headless engine, MCP integration, in-memory and
+## When to use this — and when not to
+
+**If your graph is fixed at build time, use
+[LangGraph](https://github.com/langchain-ai/langgraphjs) directly — you don't
+need this. If the graph is user data — created, edited, validated, and
+persisted at runtime by someone other than you, the developer — that's what
+OpenPipeline is for.** OpenPipeline is built **on top of** LangGraph, not
+competing with it: every pipeline still ultimately compiles to and runs as a
+LangGraph `StateGraph`.
+
+Concretely: your product's users draw a pipeline (or describe one in natural
+language via the [planner](#plan-pipelines-from-natural-language)), it's
+saved, and it runs later — possibly many times, possibly edited in between.
+If your workflow graph never changes after you ship it, you don't need any of
+this; write it directly in LangGraph and skip the extra layer.
+
+## What you get
+
+- **A typed `NodeSpec` registry + graph validation before a pipeline runs** —
+  a user-authored graph is untrusted input, so before a single node executes,
+  OpenPipeline checks topology (cycles, unreachable nodes), node/type
+  mismatches, and unbound required inputs, and rejects the run with a
+  structured `PipelineCompileError` instead of failing deep in a stack trace.
+  Every run and every step is recorded, and an optional `costCapUsd` guard
+  stops a run once cumulative spend crosses your budget (see
+  [Engine options](#engine-options-operational-safety) for the exact
+  checked-at-node-boundary semantics).
+- **An MCP-native tool catalog** — point OpenPipeline at MCP servers
+  (`@openpipeline/mcp`) and their tools become pipeline nodes. Bet on the MCP
+  ecosystem instead of hand-building an integration per tool.
+- **A natural-language planner** — `@openpipeline/planner` turns an
+  instruction into a validated draft via a `design -> validate -> correct`
+  loop, so your end users don't have to draw a graph by hand to get a working
+  one.
+- **A controlled React canvas** — `@openpipeline/react` renders and edits
+  pipelines as a DAG; you own data loading, persistence, and the app shell
+  around it.
+
+Every piece above is independently adoptable — use the headless engine on its
+own, or add the planner, the MCP catalog, and the canvas as you need them.
+
+> Status: early (`0.5.x`). The headless engine, MCP integration, in-memory and
 > Postgres persistence, an HTTP/SSE server, and a visual React builder are all
 > functional end-to-end (see the playground). Packages are **ESM-only** and
 > require **Node 22.12+**.
@@ -132,8 +178,10 @@ See [`packages/planner`](./packages/planner) for the full API (including the MCP
 - **LLM provider** — implement `LlmFactory.createModel(modelId)` returning a
   LangChain `BaseChatModel`. OpenPipeline never hardcodes a provider or model list.
 - **Persistence** — implement `PipelineStore` + `StepRecorder`. `MemoryStore` is the
-  reference; a Prisma/Postgres adapter is on the roadmap. There is **no
-  multi-tenancy in core** — `companyId` / `scope` / permissions live in your adapter.
+  in-memory reference implementation; `@openpipeline/store-prisma` ships a
+  Postgres adapter out of the box (see [Postgres persistence](#postgres-persistence)).
+  There is **no multi-tenancy in core** — `companyId` / `scope` / permissions live
+  in your adapter.
 - **MCP tools** — provide a `CatalogLoader` (single-tenant default reads servers from
   config/env). Admin curation, tool allowlists, and per-user OAuth are an optional
   `CatalogPolicy` layered on top — never required by the core.
@@ -172,11 +220,11 @@ const engine = new PipelineEngine({
 `PipelineEngine` (and the node-runner / binding resolver it drives) accepts an
 optional `logger: Logger` — a plain `{ info, warn, error, debug }` interface, so
 any logging library adapts trivially. **The default is `NOOP_LOGGER` — silent, by
-design** (a library shouldn't write to stdout/your log sink unasked). This is
-deliberately unchanged in `0.2.0`.
+design** (a library shouldn't write to stdout/your log sink unasked). This has
+been deliberately unchanged since `0.2.0`.
 
-That silence has a real cost, though: several of the hardening fixes in this
-release only surface via `logger.warn`/`logger.error` — a lost first-terminal-wins
+That silence has a real cost, though: several of the hardening fixes introduced
+in `0.2.0` only surface via `logger.warn`/`logger.error` — a lost first-terminal-wins
 race (`completeRun` returning `false`), a store failure isolated from a genuinely
 successful run's terminal write, a late/direct `onEvent` subscribe on a
 non-in-flight run, or an MCP `$ref` circularity truncation. Without a real logger
@@ -297,7 +345,8 @@ node graph with START/END markers, IF branches, drag/connect/delete, and a live
 run-status overlay. You supply the data adapter (load via `loadDraft`, save via
 `toDraft`), an i18n string map (`strings` prop, English defaults), and your own
 auth/router wrapper. It deliberately does NOT ship a Next.js shell, an API client,
-or auth — those were the Mate-X-locked parts.
+or auth — those are product-specific concerns every embedding product owns
+differently, so the component stays framework- and stack-agnostic.
 
 ### Try it: the playground
 
@@ -315,11 +364,35 @@ The playground also serves as the reference auth/router wrapper to copy: it owns
 data loading, persistence, and the SSE run loop; the library contributes only the
 canvas + store.
 
+OpenPipeline's core is deliberately single-tenant (see [Bring your
+own](#bring-your-own)); tenancy and auth are things a host adds via hooks like
+`CatalogPolicy`, not something the library assumes for you. `openpipeline-scheduler`
+is the full-stack reference for that: a separate, non-public repo that wires these
+packages into a real multi-tenant, authenticated product. The playground above is
+the public, runnable-in-under-a-minute version of the same idea, without the
+tenancy layer.
+
 ## Roadmap
 
+**Next major investment: canvas → builder kit.** `@openpipeline/react` currently
+ships one controlled component, `<BuilderCanvas/>`. The next step is decomposing
+that into composable, independently-adoptable pieces — a node palette, a
+schema-driven inspector (edit a node's inputs straight from its published JSON Schema), and a
+validation-display component (surface `validateGraph`/`PipelineCompileError`
+issues in the UI) — instead of one all-or-nothing canvas.
+
+Also planned:
+
 - npm publish hardening (dual ESM/CJS, pinned peer deps, more examples)
-- An inspector panel for editing node inputs in the builder
 - A multi-tenant `CatalogPolicy` example adapter
+
+**Explicit non-goals:**
+
+- A fluent, code-first pipeline DSL. If you want to author graphs in code,
+  [LangGraph](https://github.com/langchain-ai/langgraphjs) already does this well
+  — that's not a lane OpenPipeline is trying to win.
+- Hosted product features — hosting, auth, a marketplace. OpenPipeline is a
+  library you embed, not a product your end users sign up for directly.
 
 ## License
 
