@@ -4,6 +4,8 @@ Visual DAG builder for OpenPipeline as a controlled React component library (Rea
 
 Part of [OpenPipeline](https://github.com/carefreelife98/openpipeline) — a framework-agnostic engine for compiling and running MCP-tool pipelines as LangGraph DAGs.
 
+> Roadmap: canvas today, [builder kit](https://github.com/carefreelife98/openpipeline#roadmap) next — the single `<BuilderCanvas/>` component is planned to decompose into composable pieces (palette, schema-driven inspector, validation display).
+
 ## Install
 
 ```bash
