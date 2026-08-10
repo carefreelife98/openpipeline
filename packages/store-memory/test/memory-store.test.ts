@@ -78,6 +78,35 @@ describe('MemoryStore.save (create)', () => {
   });
 });
 
+describe('MemoryStore.save — userId attribution', () => {
+  it('persists userId on create and surfaces it on load', async () => {
+    const id = await store.save(draft({ userId: 'user-1' }));
+    const { pipeline } = await store.load(id);
+    expect(pipeline.userId).toBe('user-1');
+  });
+
+  it('leaves userId undefined when the draft omits it', async () => {
+    const id = await store.save(draft());
+    const { pipeline } = await store.load(id);
+    expect(pipeline.userId).toBeUndefined();
+  });
+
+  it('is sticky: an update that omits userId keeps the existing value', async () => {
+    const id = await store.save(draft({ userId: 'user-1' }));
+    await store.save(draft({ id, name: 'renamed' }));
+    const { pipeline } = await store.load(id);
+    expect(pipeline.name).toBe('renamed');
+    expect(pipeline.userId).toBe('user-1');
+  });
+
+  it('overwrites userId when an update supplies one explicitly', async () => {
+    const id = await store.save(draft({ userId: 'user-1' }));
+    await store.save(draft({ id, userId: 'user-2' }));
+    const { pipeline } = await store.load(id);
+    expect(pipeline.userId).toBe('user-2');
+  });
+});
+
 describe('MemoryStore.save (diff-update)', () => {
   it('preserves createdAt and advances updatedAt on re-save of the same id', async () => {
     const id = await store.save(draft({ id: 'p1', name: 'v1' }));

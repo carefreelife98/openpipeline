@@ -138,19 +138,33 @@ requirement of the pipeline for exactly this reason — see the `if [ ! -f
   package's Trusted Publisher config on npmjs.com in lockstep — deferred
   until actually needed.
 
-## Prisma 7 migration (deferred to store-prisma v1.0)
+## Prisma 7 (supported via the host-schema path since 0.6.0)
 
-`@openpipeline/store-prisma` is pinned to **Prisma 6** (peer `@prisma/client: ">=5 <7"`).
-Prisma 7 is a **breaking** change for this package and is deliberately deferred —
-a single shipped `schema.prisma` cannot serve both majors, because each of these
-is single-valued and mutually exclusive across the boundary:
+Since 0.6.0 the peer range is `@prisma/client: ">=5 <8"`. The adapter code
+depends only on the structural `PrismaClientLike` interface (no import from
+`@prisma/client`), so a **Prisma 7 host is supported today** by copying the
+models/enums from the shipped `schema.prisma` into its own v7 schema (own
+generator/datasource/`prisma.config.ts`) and passing its generated client to
+`PrismaPipelineStore`. Model names must stay verbatim (delegate property names
+derive from them); extra host columns (FKs, tenancy) are invisible to the store.
+
+One caveat for v7 hosts: the atomic raw-SQL cost update (`$executeRawUnsafe` in
+`updateRunCostAtomic`) runs through a mandatory driver adapter in v7 (e.g.
+`@prisma/adapter-pg`), which binds JS number params differently than the v6
+Rust engine. Verify the `(cost->...)::int + $N` path against a real Postgres in
+your integration tests before relying on it.
+
+**Switching the SHIPPED schema itself to the v7 form** remains a breaking
+change deferred to store-prisma v1.0 — a single shipped `schema.prisma` cannot
+serve both majors, because each of these is single-valued and mutually
+exclusive across the boundary:
 
 1. **Generator** — `prisma-client-js` (v6) → `prisma-client` (v7, ESM/no-engine).
 2. **Datasource `url`** — required in-schema (v6) → removed, lives in
    `prisma.config.ts` + `dotenv` (v7).
 3. **Driver adapter** — optional (v6) → mandatory `new PrismaClient({ adapter: new PrismaPg(...) })` (v7).
 
-When v7 is adopted (a `store-prisma` **v1.0**, peer `>=7`), the migration must:
+When the shipped schema moves to v7 (a `store-prisma` **v1.0**), the migration must:
 
 - Swap the generator block (`prisma-client`, `runtime`/`moduleFormat`), strip
   `url` from the datasource, add `packages/store-prisma/prisma.config.ts`.

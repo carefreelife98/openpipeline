@@ -357,6 +357,54 @@ describe('PrismaPipelineStore.save — create path', () => {
   });
 });
 
+describe('PrismaPipelineStore.save — userId attribution', () => {
+  it('persists userId on create, null when omitted', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+
+    await store.save(draft({ userId: 'user-1' }));
+    // Distinct node/edge ids — `pipelineNode.id` is a global PK, so reusing
+    // n1/n2 from the first save would (correctly) trip the ownership guard.
+    await store.save(draft({ name: 'anonymous', nodes: [], edges: [] }));
+
+    const byName = new Map(fake.rowsOf('pipeline').map((p) => [p.name, p.userId]));
+    expect(byName.get('wf')).toBe('user-1');
+    expect(byName.get('anonymous')).toBeNull();
+  });
+
+  it('surfaces userId on load, mapping null to undefined', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+
+    const owned = await store.save(draft({ userId: 'user-1' }));
+    const anon = await store.save(draft({ name: 'anonymous', nodes: [], edges: [] }));
+
+    expect((await store.load(owned)).pipeline.userId).toBe('user-1');
+    expect((await store.load(anon)).pipeline.userId).toBeUndefined();
+  });
+
+  it('is sticky: an update that omits userId keeps the persisted value', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+    const id = await store.save(draft({ userId: 'user-1' }));
+
+    await store.save(draft({ id, name: 'renamed' }));
+
+    expect(fake.rowsOf('pipeline')[0]?.name).toBe('renamed');
+    expect(fake.rowsOf('pipeline')[0]?.userId).toBe('user-1');
+  });
+
+  it('overwrites userId when an update supplies one explicitly', async () => {
+    const fake = createFakePrisma();
+    const store = new PrismaPipelineStore(fake.client);
+    const id = await store.save(draft({ userId: 'user-1' }));
+
+    await store.save(draft({ id, userId: 'user-2' }));
+
+    expect(fake.rowsOf('pipeline')[0]?.userId).toBe('user-2');
+  });
+});
+
 describe('PrismaPipelineStore.save — diff update path', () => {
   it('returns the same id and updates scalar fields', async () => {
     const fake = createFakePrisma();

@@ -8,13 +8,19 @@
 // Generate the client into the package so it ships self-contained:
 //   npx prisma generate --schema prisma/schema.prisma
 //
-// Pinned to Prisma 6 (peerDependencies "@prisma/client": ">=5 <7").
-// Prisma 7 is intentionally NOT supported yet: a single schema cannot serve
-// both majors — v7 changes the generator (prisma-client-js -> prisma-client),
-// moves the datasource `url` out of this file into prisma.config.ts, and makes
-// a driver adapter mandatory at client construction. Those are mutually
-// exclusive with the v6 form below, so v7 is a breaking change deferred to
-// store-prisma v1.0 (see RELEASING.md "Prisma 7 migration").
+// THIS schema file is written in the Prisma 6 form (peerDependencies
+// "@prisma/client": ">=5 <8"). A single schema file cannot serve both majors —
+// v7 changes the generator (prisma-client-js -> prisma-client), moves the
+// datasource `url` out of this file into prisma.config.ts, and makes a driver
+// adapter mandatory at client construction.
+//
+// Prisma 7 hosts ARE supported, via a different path: copy the models/enums
+// below into your own v7 schema (adding your own generator/datasource blocks)
+// and pass your generated client to `PrismaPipelineStore`. The store depends
+// only on the structural `PrismaClientLike` interface — delegate property
+// names derive from the model names, so keep `Pipeline`, `PipelineNode`,
+// `PipelineEdge`, `PipelineRun`, `PipelineRunStep` verbatim. Extra columns
+// you add (FKs, tenancy) are invisible to the store and safe.
 
 generator client {
   provider = "prisma-client-js"
@@ -56,6 +62,10 @@ model Pipeline {
   id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name             String   @db.Text
   description      String?  @db.Text
+  // Opaque audit field mirroring PipelineRun.userId. No FK, no tenancy
+  // semantics — a host that needs ownership enforcement backs this with its
+  // own FK in its own schema copy.
+  userId           String?  @map("user_id")
   outputJsonSchema Json?    @map("output_json_schema")
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -64,6 +74,7 @@ model Pipeline {
   edges PipelineEdge[]
   runs  PipelineRun[]
 
+  @@index([userId])
   @@map("pipeline")
 }
 

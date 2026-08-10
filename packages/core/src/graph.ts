@@ -9,6 +9,12 @@ export interface PipelineRow {
   id: string;
   name: string;
   description?: string;
+  /**
+   * Opaque audit string identifying who owns/created this pipeline (see
+   * `PipelineDraft.userId`). Optional, no FK, no tenancy semantics — surfaced
+   * on load so a host can enforce ownership without a second query.
+   */
+  userId?: string;
   outputJsonSchema?: unknown;
   createdAt: Date;
   updatedAt: Date;

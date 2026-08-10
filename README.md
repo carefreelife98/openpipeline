@@ -291,9 +291,18 @@ const engine = new PipelineEngine({ store, llmFactory });
 
 Apply the schema with `prisma migrate` using the shipped
 `@openpipeline/store-prisma/schema.prisma` (set `OPENPIPELINE_DATABASE_URL`). The
-schema has **no multi-tenancy** — `userId` is an optional opaque audit string with
-no foreign key. It preserves the production-grade bits: race-free atomic cost
-updates (JSONB) and fan-in-safe step sequencing.
+schema has **no multi-tenancy** — `userId` (on both `Pipeline` and
+`PipelineRun`, settable via `PipelineDraft.userId` / `RunCreate.userId`) is an
+optional opaque audit string with no foreign key. It preserves the
+production-grade bits: race-free atomic cost updates (JSONB) and fan-in-safe
+step sequencing.
+
+The shipped schema file is written in the Prisma 6 form, but **Prisma 7 hosts
+are supported** (peer `@prisma/client >=5 <8`): copy the models into your own
+v7 schema and pass your generated client — `PrismaPipelineStore` depends only
+on a structural client interface, and extra host columns (real FKs, tenancy)
+are invisible to it. See `RELEASING.md` § "Prisma 7" for details and one
+raw-SQL caveat to verify in your integration tests.
 
 ### HTTP + live events (SSE)
 

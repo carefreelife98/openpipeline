@@ -103,6 +103,9 @@ export class MemoryStore implements PipelineStore, StepRecorder {
       id,
       name: draft.name,
       description: draft.description,
+      // Attribution is sticky: an update that omits userId keeps the existing
+      // value instead of clobbering it (see PipelineDraft.userId).
+      userId: draft.userId !== undefined ? draft.userId : existing?.userId,
       outputJsonSchema: draft.outputJsonSchema,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,

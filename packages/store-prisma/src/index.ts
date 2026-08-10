@@ -53,6 +53,7 @@ interface DbPipelineWithGraph {
   id: string;
   name: string;
   description: string | null;
+  userId: string | null;
   outputJsonSchema: unknown;
   createdAt: Date;
   updatedAt: Date;
@@ -89,6 +90,7 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
       id: row.id,
       name: row.name,
       description: row.description ?? undefined,
+      userId: row.userId ?? undefined,
       outputJsonSchema: row.outputJsonSchema,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -156,6 +158,7 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
         data: {
           name: draft.name,
           description: draft.description ?? null,
+          userId: draft.userId ?? null,
           outputJsonSchema: draft.outputJsonSchema ?? null,
         },
       });
@@ -223,6 +226,10 @@ export class PrismaPipelineStore implements PipelineStore, StepRecorder {
         data: {
           name: draft.name,
           description: draft.description ?? null,
+          // Sticky attribution: an update that omits userId must not clobber
+          // the persisted value (see PipelineDraft.userId). An explicit value
+          // (including '') IS written — only `undefined` means "leave as-is".
+          ...(draft.userId !== undefined ? { userId: draft.userId } : {}),
           outputJsonSchema: draft.outputJsonSchema ?? null,
           updatedAt,
         },

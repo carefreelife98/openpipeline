@@ -39,6 +39,16 @@ export interface PipelineDraft {
   id?: string;
   name: string;
   description?: string;
+  /**
+   * Opaque audit string identifying who owns/created this pipeline — the
+   * pipeline-level mirror of `RunCreate.userId`. No FK, no tenancy semantics:
+   * the engine never reads it, stores merely persist it, and a host that needs
+   * real ownership enforcement does so in its own layer (its schema MAY back
+   * this column with a foreign key — the stores don't care). On update, an
+   * `undefined` userId leaves the persisted value untouched (attribution is
+   * not clobbered by a later save that omits it).
+   */
+  userId?: string;
   outputJsonSchema?: unknown;
   nodes: ReadonlyArray<Omit<PipelineNodeRow, 'pipelineId'>>;
   edges: ReadonlyArray<Omit<PipelineEdgeRow, 'pipelineId'>>;
