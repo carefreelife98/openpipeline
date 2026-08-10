@@ -8,6 +8,45 @@ All 9 `@openpipeline/*` packages (`core`, `nodes`, `planner`, `runtime`, `mcp`,
 **lockstep** — one version number for the whole set, published together (see
 [RELEASING.md](./RELEASING.md)).
 
+## [0.6.0] - 2026-08-11 - 0.6.0
+
+Pipeline-level ownership attribution and first-class support for Prisma 7
+hosts. Both changes are additive; no behavior changes for callers that omit
+the new field.
+
+### Added (`@openpipeline/core`, `@openpipeline/store-memory`, `@openpipeline/store-prisma`)
+
+- **`PipelineDraft.userId` / `PipelineRow.userId`** — an optional opaque audit
+  string identifying who owns/created a pipeline, the pipeline-level mirror of
+  the `RunCreate.userId` / `PipelineRun.userId` pair that has existed since
+  0.1.0. Semantics are identical: no FK, no tenancy meaning, the engine never
+  reads it — stores persist it and surface it on `load()`, so a host can
+  enforce ownership without a second query (its own schema MAY back the column
+  with a real foreign key; the stores don't care). Attribution is **sticky on
+  update**: a `save()` whose draft leaves `userId` `undefined` keeps the
+  persisted value instead of clobbering it; only an explicitly supplied value
+  (including `''`) overwrites. Both reference stores implement this
+  identically; the shipped `schema.prisma` gains the matching nullable
+  `pipeline.user_id` column plus an index (additive migration for existing
+  deployments).
+
+### Changed (`@openpipeline/store-prisma`)
+
+- **Prisma 7 hosts are now supported — peer range widened from
+  `@prisma/client ">=5 <7"` to `">=5 <8"`.** The adapter never imports
+  `@prisma/client`; it depends only on the structural `PrismaClientLike`
+  interface, which a v7-generated client satisfies. The shipped
+  `schema.prisma` remains in the Prisma 6 form (the two majors' schema
+  formats are mutually exclusive — see RELEASING.md § "Prisma 7"): a v7 host
+  copies the models/enums into its own schema (model names verbatim — the
+  delegate property names derive from them; extra host columns such as real
+  FKs are invisible to the store) and passes its own generated client.
+  Caveat for v7 hosts to verify in their integration tests: the atomic
+  raw-SQL cost update (`updateRunCostAtomic`) now runs through a mandatory
+  driver adapter (e.g. `@prisma/adapter-pg`), whose parameter binding differs
+  from the v6 Rust engine; the `(cost->...)::int + $N` path should be
+  exercised against a real Postgres before production use.
+
 ## [0.5.1] - 2026-07-31 - 0.5.1
 
 A quality-hardening batch over the 0.5.0 planner port: 7 deferred findings

@@ -1,6 +1,6 @@
 {
   "name": "@openpipeline/runtime",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "PipelineEngine orchestrator for OpenPipeline — drives a run end to end over the kernel.",
   "license": "MIT",
   "author": "carefreelife98",

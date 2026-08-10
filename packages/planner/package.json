@@ -1,6 +1,6 @@
 {
   "name": "@openpipeline/planner",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Natural-language pipeline planner for OpenPipeline: an LLM-driven design -> validate -> correct loop over LangGraph that produces a valid PipelineDraft.",
   "license": "MIT",
   "author": "carefreelife98",
