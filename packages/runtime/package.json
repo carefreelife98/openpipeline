@@ -1,6 +1,6 @@
 {
   "name": "@openpipeline/runtime",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "PipelineEngine orchestrator for OpenPipeline — drives a run end to end over the kernel.",
   "license": "MIT",
   "author": "carefreelife98",
@@ -25,7 +25,8 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "files": [

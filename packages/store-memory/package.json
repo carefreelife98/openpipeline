@@ -1,6 +1,6 @@
 {
   "name": "@openpipeline/store-memory",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "In-memory PipelineStore + StepRecorder reference implementation for OpenPipeline.",
   "license": "MIT",
   "author": "carefreelife98",
@@ -24,7 +24,8 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "files": [

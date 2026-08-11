@@ -8,6 +8,22 @@ All 9 `@openpipeline/*` packages (`core`, `nodes`, `planner`, `runtime`, `mcp`,
 **lockstep** — one version number for the whole set, published together (see
 [RELEASING.md](./RELEASING.md)).
 
+## [0.6.1] - 2026-08-11 - 0.6.1
+
+### Fixed (all packages)
+
+- **CJS hosts on Node ≥22.12 can now `require()` the packages.** Every
+  package's `exports` map declared only the `import` condition, so a
+  CommonJS `require('@openpipeline/…')` failed at exports resolution with
+  `ERR_PACKAGE_PATH_NOT_EXPORTED` — before Node's `require(esm)` support
+  (which loads ESM-only code from CJS just fine, absent top-level `await`)
+  ever got a chance to run. Each conditional exports entry now adds a
+  `default` condition pointing at the same ESM file, letting CJS resolution
+  succeed and `require(esm)` take over from there. Discovered embedding the
+  packages into a CommonJS NestJS host; the packages remain ESM-only — no
+  CJS build is shipped, so `require()` still needs Node ≥22.12 and no
+  top-level await (both already true of these packages).
+
 ## [0.6.0] - 2026-08-11 - 0.6.0
 
 Pipeline-level ownership attribution and first-class support for Prisma 7

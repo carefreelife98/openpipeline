@@ -57,10 +57,13 @@ this; write it directly in LangGraph and skip the extra layer.
 Every piece above is independently adoptable — use the headless engine on its
 own, or add the planner, the MCP catalog, and the canvas as you need them.
 
-> Status: early (`0.5.x`). The headless engine, MCP integration, in-memory and
+> Status: early (`0.6.x`). The headless engine, MCP integration, in-memory and
 > Postgres persistence, an HTTP/SSE server, and a visual React builder are all
 > functional end-to-end (see the playground). Packages are **ESM-only** and
-> require **Node 22.12+**.
+> require **Node 22.12+**. CommonJS hosts work too — on Node 22.12+,
+> `require('@openpipeline/…')` loads the ESM build via `require(esm)` (the
+> packages ship no top-level `await`), so embedding into a CJS app (e.g. a
+> NestJS backend) needs no bundler tricks.
 
 ## Install
 
